@@ -18,7 +18,6 @@ from lock_in.communication.protocol import (
     MAX_MESSAGE_BYTES,
     MAX_TEST_DELAY_MS,
     ProtocolError,
-    SequenceStatus,
     SequenceTracker,
     decode_message,
     encode_message,
@@ -131,9 +130,7 @@ class MessageRouter:
                 connection_id=request.connection_id,
             )
 
-        ordering = self._sequences.observe(
-            request.client_instance_id, request.sequence
-        )
+        ordering = self._sequences.observe(request.client_instance_id, request.sequence)
         delay_ms = request.payload.get("testDelayMs", 0)
         if (
             not isinstance(delay_ms, int)
@@ -314,7 +311,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--namespace", default="default", help=argparse.SUPPRESS)
     parser.add_argument("--background", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--shutdown", action="store_true", help="Stop the running server.")
+    parser.add_argument(
+        "--shutdown", action="store_true", help="Stop the running server."
+    )
     parser.add_argument("--duration", type=float, metavar="SECONDS")
     parser.add_argument("--log", type=Path)
     return parser

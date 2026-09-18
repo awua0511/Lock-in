@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
-
 PROTOCOL_VERSION = 1
 MAX_MESSAGE_BYTES = 64 * 1024
 MAX_TEST_DELAY_MS = 5_000
@@ -77,7 +76,9 @@ def decode_message(data: bytes) -> dict[str, Any]:
     try:
         value = json.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise ProtocolError("invalid_json", "Message is not valid UTF-8 JSON") from error
+        raise ProtocolError(
+            "invalid_json", "Message is not valid UTF-8 JSON"
+        ) from error
     if not isinstance(value, dict):
         raise ProtocolError("invalid_envelope", "Message must be a JSON object")
     return value
@@ -91,7 +92,9 @@ def parse_envelope(message: dict[str, Any], *, require_connection: bool) -> Enve
     def required_string(name: str) -> str:
         value = message.get(name)
         if not isinstance(value, str) or not value or len(value) > 128:
-            raise ProtocolError("invalid_envelope", f"{name} must be a non-empty string")
+            raise ProtocolError(
+                "invalid_envelope", f"{name} must be a non-empty string"
+            )
         return value
 
     message_id = required_string("messageId")
@@ -103,12 +106,12 @@ def parse_envelope(message: dict[str, Any], *, require_connection: bool) -> Enve
 
     sequence = message.get("sequence")
     if not isinstance(sequence, int) or isinstance(sequence, bool) or sequence < 0:
-        raise ProtocolError("invalid_sequence", "sequence must be a non-negative integer")
+        raise ProtocolError(
+            "invalid_sequence", "sequence must be a non-negative integer"
+        )
 
     connection_id = message.get("connectionId")
-    if require_connection and (
-        not isinstance(connection_id, str) or not connection_id
-    ):
+    if require_connection and (not isinstance(connection_id, str) or not connection_id):
         raise ProtocolError("missing_connection", "Host connectionId is required")
     if connection_id is not None and not isinstance(connection_id, str):
         raise ProtocolError("invalid_connection", "connectionId must be a string")

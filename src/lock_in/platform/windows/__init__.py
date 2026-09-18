@@ -1,2 +1,1 @@
 """Windows-specific adapters."""
-

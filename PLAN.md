@@ -2,6 +2,10 @@
 
 This plan begins after the four risk-validation experiments. Its goal is to turn the validated mechanisms into a maintainable Windows application without coupling experimental entry points directly into production lifecycle code.
 
+## Current Gate
+
+Milestone 0 implementation is complete and awaiting user acceptance. Milestone 1 has not started. The baseline commit and tag remain intentionally uncreated until acceptance.
+
 ## Delivery Strategy
 
 Development proceeds through vertical, testable milestones. Every milestone must leave the repository runnable and must satisfy its acceptance criteria before the next one begins.
@@ -35,7 +39,7 @@ Website rules, follow-up timing, reviews, and packaging are added only after thi
 
 ### Work
 
-- Create a Git baseline commit and tag for the four completed experiments.
+- After user acceptance, create a Git baseline commit and tag for the four completed experiments.
 - Keep experiment commands runnable throughout the production refactor.
 - Add formatting, static analysis, and test commands with pinned development-tool ranges.
 - Define supported versions: Windows 10/11 and current Chrome/Edge releases.

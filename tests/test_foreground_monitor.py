@@ -137,4 +137,3 @@ def test_json_output_has_stable_status_value() -> None:
 
     assert payload["status"] == "identified"
     assert payload["application_name"] == "Example"
-

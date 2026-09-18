@@ -9,7 +9,6 @@ from lock_in.context.aggregator import (
     EventDisposition,
 )
 
-
 CHROME = ApplicationIdentity(
     executable_path=r"C:\Program Files\Google\Chrome\Application\chrome.exe",
     browser_kind="chrome",

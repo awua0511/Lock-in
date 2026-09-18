@@ -194,7 +194,9 @@ class PromptPrototype:
     def _emit(self, event: str, request: PromptRequest, **extra: object) -> None:
         payload = {
             "event": event,
-            "observedAt": datetime.now().astimezone().isoformat(timespec="milliseconds"),
+            "observedAt": datetime.now()
+            .astimezone()
+            .isoformat(timespec="milliseconds"),
             "monotonicMs": time.monotonic_ns() // 1_000_000,
             "targetHwnd": request.target_hwnd,
             "targetPid": request.target_pid,

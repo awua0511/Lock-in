@@ -137,8 +137,6 @@ def test_router_echoes_payload_without_business_logic() -> None:
     session = ClientSession()
     router.route(message("hello", 0), session)
 
-    response = router.route(
-        message("ping", 1, payload={"echo": "round-trip"}), session
-    )
+    response = router.route(message("ping", 1, payload={"echo": "round-trip"}), session)
 
     assert response["payload"]["echo"] == "round-trip"

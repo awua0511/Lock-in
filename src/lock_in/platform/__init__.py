@@ -1,2 +1,1 @@
 """Operating-system integration adapters."""
-

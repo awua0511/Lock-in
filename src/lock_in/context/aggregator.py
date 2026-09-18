@@ -71,7 +71,9 @@ class ForegroundContext:
 
     @property
     def website_evaluation_allowed(self) -> bool:
-        return self.resolution == ContextResolution.RESOLVED and self.browser is not None
+        return (
+            self.resolution == ContextResolution.RESOLVED and self.browser is not None
+        )
 
     def to_dict(self) -> dict[str, object]:
         value = asdict(self)
@@ -233,9 +235,7 @@ class ContextAggregator:
             return self._unchanged(EventDisposition.IGNORED, "deadline_not_reached")
         return self._finalize_pending(received_ms, timed_out=True)
 
-    def _consume_pending_snapshot(
-        self, snapshot: BrowserSnapshot
-    ) -> AggregationResult:
+    def _consume_pending_snapshot(self, snapshot: BrowserSnapshot) -> AggregationResult:
         pending = self._pending
         assert pending is not None
         request = pending.request
@@ -278,7 +278,9 @@ class ContextAggregator:
         if snapshot.client_instance_id != bound.client_instance_id:
             return self._unchanged(EventDisposition.REJECTED, "client_mismatch")
         if not snapshot.window_focused or not snapshot.domain:
-            return self._set_unknown(snapshot.received_ms, "proactive_snapshot_ambiguous")
+            return self._set_unknown(
+                snapshot.received_ms, "proactive_snapshot_ambiguous"
+            )
 
         self._context_revision += 1
         browser = self._resolved_browser(snapshot)
@@ -323,7 +325,9 @@ class ContextAggregator:
                 self._context,
             )
 
-        reason = "snapshot_timeout_unknown" if timed_out else "ambiguous_snapshot_unknown"
+        reason = (
+            "snapshot_timeout_unknown" if timed_out else "ambiguous_snapshot_unknown"
+        )
         return self._set_unknown(received_ms, reason)
 
     def _set_unknown(self, received_ms: int, reason: str) -> AggregationResult:

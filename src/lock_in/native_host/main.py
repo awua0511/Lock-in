@@ -23,7 +23,6 @@ from lock_in.communication.protocol import (
 )
 from lock_in.platform.windows.local_identity import pipe_address
 
-
 CONNECT_TIMEOUT_SECONDS = 8.0
 CONNECT_RETRY_SECONDS = 0.1
 CREATE_NO_WINDOW = 0x08000000
@@ -85,17 +84,15 @@ def connect_or_launch(namespace: str) -> Connection:
         except OSError as error:
             last_error = error
             now = time.monotonic()
-            if (
-                launch_process is None
-                or (
-                    launch_process.poll() is not None
-                    and now - last_launch >= 0.25
-                )
+            if launch_process is None or (
+                launch_process.poll() is not None and now - last_launch >= 0.25
             ):
                 launch_process = _launch_tray(namespace)
                 last_launch = now
             time.sleep(CONNECT_RETRY_SECONDS)
-    raise ConnectionError("Could not connect to the Lock-In tray process") from last_error
+    raise ConnectionError(
+        "Could not connect to the Lock-In tray process"
+    ) from last_error
 
 
 class NativeRelay:

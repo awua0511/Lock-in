@@ -112,7 +112,10 @@ def envelope(
 def assert_response(
     response: dict[str, Any], expected_type: str, expected_status: str
 ) -> None:
-    if response.get("type") != expected_type or response.get("status") != expected_status:
+    if (
+        response.get("type") != expected_type
+        or response.get("status") != expected_status
+    ):
         raise HarnessFailure(
             f"Expected {expected_type}/{expected_status}, received {response}"
         )
@@ -145,7 +148,9 @@ def run_harness(namespace: str) -> None:
         assert_response(edge_hello, "hello_ack", "accepted")
         first_pid = chrome_hello["payload"]["serverPid"]
         if edge_hello["payload"]["serverPid"] != first_pid:
-            raise HarnessFailure("Concurrent Hosts connected to different tray processes")
+            raise HarnessFailure(
+                "Concurrent Hosts connected to different tray processes"
+            )
         emit("absent_tray_and_simultaneous_host_start", serverPid=first_pid)
 
         # Additional profiles get independent Host and Pipe connections.
@@ -211,9 +216,7 @@ def run_harness(namespace: str) -> None:
         while time.monotonic() < restart_deadline:
             candidate = HostClient(namespace)
             clients.append(candidate)
-            candidate.send(
-                envelope("hello", "edge-profile-reloaded", "edge", 0)
-            )
+            candidate.send(envelope("hello", "edge-profile-reloaded", "edge", 0))
             response = candidate.receive(timeout=10)
             if response.get("type") == "hello_ack":
                 restarted = candidate

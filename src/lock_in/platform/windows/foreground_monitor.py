@@ -644,7 +644,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     started = time.monotonic()
     try:
         while not stop_requested.wait(0.1):
-            if args.duration is not None and time.monotonic() - started >= args.duration:
+            if (
+                args.duration is not None
+                and time.monotonic() - started >= args.duration
+            ):
                 break
     finally:
         monitor.stop()

@@ -96,6 +96,7 @@ Requirements:
 - Windows 10 or Windows 11.
 - Python 3.12 or newer.
 - PowerShell.
+- Node.js 20 or newer for browser-extension syntax checks.
 - Chrome or Edge only when running the browser experiment.
 
 Create the environment and install the project:
@@ -109,6 +110,12 @@ Run the complete automated test suite:
 
 ```powershell
 .\.venv\Scripts\python -m pytest -v
+```
+
+Run the complete baseline quality gate:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\verify.ps1
 ```
 
 Replay the required context-correlation scenario:
@@ -149,6 +156,9 @@ tests/                   Unit and deterministic replay tests
 
 - [Implementation plan](PLAN.md)
 - [Technical architecture](ARCHITECTURE.en.md)
+- [Validated baseline and acceptance](docs/BASELINE.md)
+- [Supported platforms](docs/SUPPORT.md)
+- [Architecture decision records](docs/decisions/README.md)
 - [Experiment 1](EXPERIMENT_01.md)
 - [Experiment 2](EXPERIMENT_02.md)
 - [Experiment 3](EXPERIMENT_03.md)

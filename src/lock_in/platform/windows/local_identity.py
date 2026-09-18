@@ -86,7 +86,7 @@ def current_user_sid() -> str:
 
 
 def user_scope_hash(namespace: str = "default") -> str:
-    material = f"{current_user_sid()}\0{namespace}".encode("utf-8")
+    material = f"{current_user_sid()}\0{namespace}".encode()
     return hashlib.sha256(material).hexdigest()[:16]
 
 

@@ -34,7 +34,9 @@ def validate_extension_ids(values: list[str]) -> list[str]:
 
 
 def manifest_directory() -> Path:
-    return Path(os.environ.get("LOCALAPPDATA", Path.home())) / "LockIn" / "NativeMessaging"
+    return (
+        Path(os.environ.get("LOCALAPPDATA", Path.home())) / "LockIn" / "NativeMessaging"
+    )
 
 
 def native_host_executable() -> Path:
