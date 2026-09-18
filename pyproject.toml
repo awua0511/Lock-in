@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=70"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lock-in"
+version = "0.1.0"
+description = "A local-first focus assistant for Windows"
+readme = "README.en.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+lock-in-foreground-monitor = "lock_in.platform.windows.foreground_monitor:main"
+lock-in-entry-prompt = "lock_in.experiments.entry_prompt:main"
+lock-in-native-host = "lock_in.native_host.main:main"
+lock-in-communication-tray = "lock_in.experiments.communication_tray:main"
+lock-in-communication-harness = "lock_in.experiments.communication_harness:main"
+lock-in-context-replay = "lock_in.experiments.context_replay:main"
+lock-in-register-native-host = "lock_in.native_host.registration:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-q -p no:cacheprovider"
+testpaths = ["tests"]

@@ -1,0 +1,15 @@
+body {
+  box-sizing: border-box;
+  font: 13px/1.4 "Segoe UI", sans-serif;
+  margin: 0;
+  min-width: 360px;
+  padding: 16px;
+}
+h1 { font-size: 16px; margin: 0 0 12px; }
+h2 { font-size: 13px; margin: 14px 0 6px; }
+dl { display: grid; grid-template-columns: 100px 1fr; gap: 6px; margin: 0 0 14px; }
+dt { color: #555; }
+dd { margin: 0; overflow-wrap: anywhere; }
+.actions { display: grid; gap: 6px; grid-template-columns: 1fr 1fr; }
+button { min-height: 32px; }
+pre { background: #f4f4f4; font-size: 11px; max-height: 180px; overflow: auto; padding: 8px; white-space: pre-wrap; }

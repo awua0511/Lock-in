@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "Lock-In Communication Experiment",
+  "version": "0.1.0",
+  "description": "Validates the Lock-In Native Messaging round trip only.",
+  "permissions": ["nativeMessaging", "storage"],
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "action": {
+    "default_title": "Lock-In Experiment 3",
+    "default_popup": "popup.html"
+  }
+}

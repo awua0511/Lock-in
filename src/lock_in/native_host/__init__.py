@@ -1,0 +1,1 @@
+"""Browser Native Messaging Host."""

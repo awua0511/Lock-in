@@ -1,0 +1,55 @@
+{
+  "name": "a new browser epoch never reuses the prior domain",
+  "snapshotWaitMs": 300,
+  "clients": [
+    {
+      "connectionId": "chrome-host-1",
+      "clientInstanceId": "chrome-profile-1",
+      "browserKind": "chrome"
+    }
+  ],
+  "events": [
+    {
+      "atMs": 0,
+      "type": "foreground",
+      "application": {
+        "executablePath": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+        "browserKind": "chrome"
+      }
+    },
+    {
+      "atMs": 10,
+      "type": "browser_snapshot",
+      "connectionId": "chrome-host-1",
+      "clientInstanceId": "chrome-profile-1",
+      "browserKind": "chrome",
+      "sequence": 1,
+      "windowId": 1,
+      "tabId": 8,
+      "domain": "github.com",
+      "windowFocused": true,
+      "snapshotRequestId": "snapshot-1",
+      "requestedForegroundEpoch": 1
+    },
+    {
+      "atMs": 20,
+      "type": "foreground",
+      "application": {
+        "executablePath": "C:\\Program Files\\Microsoft Office\\root\\Office16\\WINWORD.EXE",
+        "browserKind": null
+      }
+    },
+    {
+      "atMs": 30,
+      "type": "foreground",
+      "application": {
+        "executablePath": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+        "browserKind": "chrome"
+      }
+    },
+    {
+      "atMs": 330,
+      "type": "advance_time"
+    }
+  ]
+}

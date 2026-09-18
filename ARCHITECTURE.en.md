@@ -1,6 +1,6 @@
 # Lock-In Architecture
 
-English | [简体中文](ARCHITECTURE.md)
+English
 
 This document describes the technical architecture of the Lock-In Windows client and browser extension. For product features and user-facing behavior, see [README.en.md](README.en.md).
 
@@ -32,25 +32,38 @@ If the Python implementation encounters unacceptable startup time, resource usag
 ## High-Level Architecture
 
 ```text
-┌────────────────────────────────────────┐
-│             Windows Client             │
-│                                        │
-│  UI / Scheduling / Allowlists / Rules  │
-│  Foreground Monitor / Timer / Reviews  │
-└───────────────────┬────────────────────┘
-                    │ Native Messaging
-┌───────────────────▼────────────────────┐
-│            Browser Extension           │
-│                                        │
-│  Tab Activation / Navigation / Domain  │
-└───────────────────┬────────────────────┘
-                    │
-┌───────────────────▼────────────────────┐
-│            Local SQLite Database       │
-│                                        │
-│  Schedules / Allowlists / Events       │
-└────────────────────────────────────────┘
+┌────────────────────────┐
+│ Chromium Extension     │
+│ Tabs / Windows / Domain│
+└───────────┬────────────┘
+            │ Native Messaging (stdio)
+┌───────────▼────────────┐
+│ Native Messaging Host │  Stateless relay launched per connection
+└───────────┬────────────┘
+            │ Per-user Named Pipe
+┌───────────▼─────────────────────────────────────────┐
+│           Windows Tray Client (single instance)    │
+│                                                    │
+│ WinEvent monitor ─┐                                │
+│                   ├→ ContextAggregator → Rules → UI│
+│ Browser messages ─┘                         │      │
+│                                             └→ Data│
+└───────────┬────────────────────────────────────────┘
+            │ Sole database owner
+┌───────────▼────────────┐
+│ Local SQLite Database │
+│ Schedules / Rules /   │
+│ Events                │
+└───────────────────────┘
 ```
+
+Process boundaries must follow these rules:
+
+- The Windows tray client is a single-instance process and the sole owner of rule state and SQLite.
+- A browser may launch one Native Messaging Host for each extension connection; every Host is stateless.
+- A Host validates, frames, and relays messages only. It never evaluates rules, displays UI, or accesses SQLite.
+- Bidirectional messages between extensions and the client pass through the Host and a per-user Named Pipe.
+- Multiple browsers, browser profiles, and Host processes may connect to the same tray client concurrently.
 
 ## Module Boundaries
 
@@ -61,16 +74,24 @@ lock_in/
 ├── app/                  Entry point and application lifecycle
 ├── ui/                   PySide6 windows, tray, and dialogs
 ├── monitoring/           Foreground window and browser monitoring
+├── context/              Cross-source aggregation, ordering, and validity
 ├── rules/                Schedule and allowlist evaluation
 ├── sessions/             Work sessions and foreground timing
 ├── notifications/        Prompts and evening notifications
 ├── storage/              SQLite repositories and migrations
-├── native_messaging/     Browser extension communication
+├── ipc/                  Named Pipe server and connection management
 └── platform/windows/     Win32 API wrappers
+
+native_host/
+├── main.py               Native Messaging framing
+├── validation.py         Protocol version and message validation
+└── pipe_client.py        Per-user Named Pipe client
 
 browser_extension/
 ├── manifest.json
 ├── service-worker.js
+├── native-connection.js
+├── context-snapshot.js
 ├── options.html
 └── options.js
 ```
@@ -173,15 +194,25 @@ The extension listens for:
 - `tabs.onUpdated` for URL updates.
 - `webNavigation` for top-level navigation.
 - Browser-window focus changes.
+- Current-context snapshot requests forwarded by the desktop client.
 
-The extension sends only normalized information:
+Each extension instance in a browser profile generates and persists a random `clientInstanceId` on first run. It must not contain a username, profile path, or other personally identifying information. Every state message also carries a monotonically increasing `sequence` so duplicated and out-of-order messages can be discarded.
+
+The extension sends only normalized context snapshots:
 
 ```json
 {
-  "event": "active_url_changed",
+  "protocolVersion": 1,
+  "event": "browser_context_snapshot",
+  "snapshotRequestId": "uuid-from-request-snapshot",
+  "requestedForegroundEpoch": 912,
+  "clientInstanceId": "550e8400-e29b-41d4-a716-446655440000",
   "browser": "edge",
+  "sequence": 184,
   "windowId": 42,
   "tabId": 108,
+  "documentId": "optional-browser-document-id",
+  "windowFocused": true,
   "scheme": "https",
   "domain": "youtube.com",
   "timestamp": "2026-09-16T13:08:00-04:00"
@@ -202,40 +233,200 @@ The first release prioritizes Chromium-based browsers:
 - Microsoft Edge.
 - Brave.
 
+### Context Aggregation and Temporal Correlation
+
+Windows foreground events and browser-extension events originate in different processes and cannot be joined using timestamps alone. The desktop client must use a `ContextAggregator` to produce one authoritative current context.
+
+The aggregator maintains two state families:
+
+```text
+WindowsForegroundState
+- foregroundEpoch: increments on every physical foreground change
+- hwnd / pid / applicationIdentity
+- browserKind, when the application is supported
+- receivedMonotonicTime
+
+BrowserClientState
+- connectionId / clientInstanceId / browserKind
+- sequence
+- windowId / tabId / documentId
+- windowFocused / domain
+- receivedMonotonicTime
+- healthState
+```
+
+Correlation rules:
+
+1. When a regular application enters the foreground, immediately create an application-only context.
+2. When a supported browser enters the foreground, create a `PendingBrowserContext`, generate a unique `snapshotRequestId` bound to the new `foregroundEpoch`, and send both values in `request_snapshot` to every connected extension instance for that browser type.
+3. An initial snapshot may resolve the pending context only when it echoes the current `snapshotRequestId` and `foregroundEpoch`, has a supported protocol version and newer `sequence`, claims a focused window, and arrives inside the validity window. Arrival time alone is never proof of correlation.
+4. Resolve only after every expected healthy extension instance responds and exactly one valid focused candidate exists. A cached or proactive snapshot cannot resolve a pending context.
+5. If responses are missing at the deadline, multiple candidates are equally credible, or no valid candidate exists, produce `UnknownBrowserContext`. Never reuse the previous domain.
+6. While the browser remains foreground, only a proactive snapshot from the already bound extension instance may increment `contextRevision` and create a new logical context without changing the Windows `foregroundEpoch`.
+7. When Windows switches to another application, invalidate the previous browser context immediately. Late browser messages may refresh the cache but cannot trigger a prompt.
+
+Suggested initial parameters:
+
+```text
+Snapshot wait limit: 300 ms
+Proactive snapshot TTL: 2 s
+Heartbeat interval: 15 s
+Connection stale threshold: 45 s
+```
+
+These parameters must be centrally configurable and tuned through multi-window, multi-profile, and high-load testing. All timeout and freshness decisions use the desktop client's monotonic receipt clock. Extension wall-clock timestamps are diagnostic only and must not order cross-process events.
+
+Aggregator output:
+
+```json
+{
+  "contextId": "uuid",
+  "foregroundEpoch": 912,
+  "contextRevision": 3,
+  "resolution": "resolved",
+  "application": {
+    "kind": "win32",
+    "executablePath": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+  },
+  "browser": {
+    "connectionId": "uuid",
+    "clientInstanceId": "uuid",
+    "windowId": 42,
+    "tabId": 108,
+    "domain": "github.com"
+  },
+  "receivedMonotonicMs": 48192033
+}
+```
+
+`resolution` is one of `resolved`, `pending`, or `unknown`. The rules engine evaluates website allowlists only for a `resolved` context.
+
 ## Native Messaging
 
-The browser extension communicates with the local client through Native Messaging. Messages use UTF-8 JSON with the browser-required four-byte little-endian length prefix.
+The browser extension first communicates with a Native Messaging Host. The Host then communicates with the running tray client over a per-user Named Pipe. Native Messaging and the Named Pipe use the same JSON envelope but different transport framing.
 
-The Native Messaging Host must:
+### Component Responsibilities
 
-- Have a stable, unique application identifier.
-- Declare the extension IDs permitted to connect.
-- Reject unknown or malformed messages.
-- Include a protocol version in the message schema.
-- Enforce a maximum message size.
+**Browser extension**
+
+- Captures the current browser window and tab state.
+- Maintains an increasing `sequence`.
+- Responds to `request_snapshot` forwarded by the desktop client.
+- Reconnects with capped exponential backoff after a disconnect.
+
+**Native Messaging Host**
+
+- Is launched by the browser per connection and may have a shorter lifetime than the desktop client.
+- Reads and writes Native Messaging's four-byte little-endian length prefix and UTF-8 JSON body.
+- Validates message size, JSON structure, and protocol version.
+- Assigns a random `connectionId` to its process.
+- Connects to the desktop client's per-user Named Pipe and relays messages bidirectionally.
+- Never accesses the database, evaluates allowlist rules, or displays UI.
+
+**Windows tray client**
+
+- Uses a per-user mutex to guarantee a single instance.
+- Accepts multiple Host connections as the Named Pipe Server.
+- Owns connection health, browser snapshots, and the ContextAggregator.
+- Is the sole process allowed to read or write SQLite.
+- Notifies connected peers and closes the Pipe during shutdown.
+
+### Startup and Reconnection
+
+```text
+Extension calls connectNative
+        ↓
+Browser launches Native Messaging Host
+        ↓
+Host attempts to connect to per-user Named Pipe
+        ├── Success → hello handshake → bidirectional relay
+        └── Missing
+              ↓
+           Launch tray client --background
+              ↓
+           Retry Pipe connection for a bounded period
+              ├── Success → hello handshake
+              └── Failure → return host_unavailable and exit
+```
+
+The client handles concurrent startup races through its mutex: several Hosts may attempt to launch it, but only one tray process survives. Host retries must have explicit limits and must never loop indefinitely.
+
+After a client upgrade or restart, existing Hosts disconnect and exit; extensions subsequently call `connectNative` again. The architecture must not assume a Native Messaging connection is permanent.
+
+### Per-User Named Pipe
+
+The Pipe name includes the protocol major version and a value derived from the current user identity, for example:
+
+```text
+\\.\pipe\LockIn.<user-sid-hash>.v1
+```
+
+Security requirements:
+
+- The Pipe ACL allows access only to the current interactive user.
+- The client rejects peers from another session or user.
+- Enforce a per-message limit such as 64 KiB.
+- Apply connection read/write and idle timeouts.
+- The Host never accepts an arbitrary Pipe path from its command line.
+- The Host generates `connectionId`; the extension cannot choose it.
+
+### Host Manifest and Browser Identity
+
+Each browser installation receives a corresponding Native Messaging Host manifest. Its `allowed_origins` contains explicit production extension IDs. Development and production extension IDs are maintained separately; wildcards are not used.
+
+The browser enforces which extensions may launch the Host from this manifest, but the desktop client still validates the Host's `hello` message, protocol version, and browser type. Anonymous `clientInstanceId` values distinguish extension instances in different browser profiles.
+
+### Protocol Envelope
 
 Recommended message envelope:
 
 ```json
 {
   "protocolVersion": 1,
-  "event": "active_url_changed",
+  "messageId": "uuid",
+  "connectionId": "uuid",
+  "type": "browser_context_snapshot",
   "payload": {
     "browser": "edge",
+    "clientInstanceId": "uuid",
+    "sequence": 184,
+    "windowFocused": true,
     "domain": "youtube.com"
   },
   "timestamp": "2026-09-16T13:08:00-04:00"
 }
 ```
 
-The client should distinguish between these browser-extension states:
+The first protocol version defines at least:
+
+```text
+hello / hello_ack
+request_snapshot
+browser_context_snapshot
+heartbeat / heartbeat_ack
+protocol_error
+host_unavailable
+shutdown
+```
+
+Protocol rules:
+
+- Do not accept business messages before the `hello` handshake completes.
+- Reject unsupported major versions; additional fields remain backward-compatible.
+- Process a given `connectionId + sequence` snapshot only once.
+- Return `protocol_error` for an unknown message type without crashing the client.
+- Logs contain message type, size, and error code only—not domain values.
+
+The client distinguishes these states for every browser connection:
 
 - Connected with current tab data.
+- Connected and waiting for the first snapshot.
 - Browser running but extension not connected.
 - Extension connected but current page cannot be identified.
 - Extension not installed.
+- Heartbeat timeout or incompatible protocol.
 
-An unknown state must not be incorrectly treated as a non-allowlisted website.
+An unknown or unhealthy state must not be treated as a non-allowlisted website, and the previous domain must never be silently reused. During a work period, the client displays one non-blocking component-health notification.
 
 ## Rules Engine
 
@@ -243,14 +434,22 @@ The rules engine receives a unified `ForegroundContext`:
 
 ```json
 {
+  "contextId": "uuid",
+  "foregroundEpoch": 912,
+  "contextRevision": 3,
+  "resolution": "resolved",
   "application": {
     "kind": "win32",
     "executablePath": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
   },
-  "website": {
+  "browser": {
+    "connectionId": "uuid",
+    "clientInstanceId": "uuid",
+    "windowId": 42,
+    "tabId": 108,
     "domain": "github.com"
   },
-  "observedAt": "2026-09-16T13:08:00-04:00"
+  "receivedMonotonicMs": 48192033
 }
 ```
 
@@ -267,8 +466,13 @@ Do nothing
         ↓ No
 Is the current application a supported browser?
         ├── No  → Evaluate the application allowlist
-        └── Yes → Evaluate the current domain and website allowlist
+        └── Yes
+             ├── pending  → Wait for a snapshot; do not prompt
+             ├── unknown  → Do not prompt; update component health
+             └── resolved → Evaluate the domain and website allowlist
 ```
+
+The rules engine never reads extension caches or Windows state directly. It consumes only immutable snapshots emitted by the ContextAggregator. Every decision includes `contextId`, `foregroundEpoch`, and `contextRevision`; immediately before displaying a prompt, the client verifies that these values still describe the current context so a late decision cannot prompt for a page the user has already left.
 
 Domain rules must operate on a parsed hostname rather than a raw string suffix. For example, when subdomains of `example.com` are allowed, `docs.example.com` may match while `example.com.evil.test` must not.
 
@@ -371,10 +575,12 @@ Recommended execution contexts:
 
 - UI main thread for the PySide6 event loop and window rendering.
 - WinEvent thread for hook registration and the Windows message loop.
-- Native Messaging thread or subprocess for browser standard input/output.
-- Data-access layer with short SQLite transactions and serialized writes.
+- Pipe Server I/O for multiple Native Host connections and asynchronous reads and writes.
+- ContextAggregator running in one serialized execution context for Windows and browser events.
+- Database worker thread as the desktop client's sole SQLite writer, using short transactions.
+- Native Messaging Host as an external short-lived browser-launched process, not part of the client thread model.
 
-All cross-thread events pass through a unified queue before being forwarded to the UI or rules engine. WinEvent callbacks must never manipulate PySide6 widgets directly.
+All cross-thread and cross-process events pass through a unified queue before the ContextAggregator, rules engine, or UI consumes them. WinEvent and Pipe I/O callbacks must never manipulate PySide6 widgets directly. SQLite connections are not shared across threads, and neither the Native Messaging Host nor the browser extension may open the database file.
 
 ## Local Notifications
 
@@ -445,6 +651,13 @@ Before public distribution, evaluate:
 
 ## Implementation Order
 
+Risk-validation progress:
+
+- [Experiment 1: Windows Foreground Application Monitor](EXPERIMENT_01.md) is implemented as a standalone standard-library prototype. It validates hook installation, process-path resolution, classified failures, privacy-safe output, and clean shutdown. Its Win32 adapter may be reused, but it is not yet the production monitoring service.
+- [Experiment 2: Entry Prompt and Window Restoration](EXPERIMENT_02.md) is implemented as a standalone prototype. It validates one-prompt-per-entry semantics, prompt self-exclusion, duplicate suppression, explicit continue behavior, re-entry prompting, and best-effort restoration of the prior work window. It does not yet include schedules, persistence, or follow-up timers.
+- [Experiment 3: Complete Browser Communication Chain](EXPERIMENT_03.md) is implemented as a browser extension, stateless Native Messaging relay, per-user Named Pipe, and single-instance tray-process prototype. It validates concurrent browsers and profiles, launch races, restart and crash recovery, extension reloads, ordering, duplication, and client-side timeouts. It intentionally contains no allowlist or database behavior.
+- [Experiment 4: Context Aggregator Replay Simulator](EXPERIMENT_04.md) is implemented as a deterministic, in-memory event replay. It validates request-and-epoch correlation, stale and late message rejection, per-connection deduplication and ordering, conservative multi-profile ambiguity handling, explicit `unknown` output, and the prohibition against reusing a previous domain. It has no live browser, prompt, allowlist, or database dependency.
+
 ### Phase 1: Application Allowlist Prototype
 
 - [ ] Create the system tray application.
@@ -454,6 +667,17 @@ Before public distribution, evaluate:
 - [ ] Add applications from the recent-app list.
 - [ ] Prompt for non-allowlisted applications.
 - [ ] Record return and continue decisions.
+
+### Phase 1 Addendum: Process Boundaries and Context Aggregation
+
+- [ ] Implement the desktop client's single-instance mutex.
+- [ ] Implement the per-user Named Pipe Server and ACL.
+- [ ] Implement the stateless Native Messaging Host.
+- [ ] Define and test handshake, protocol versioning, and message-size limits.
+- [ ] Implement heartbeat, timeout, and bounded reconnection behavior.
+- [ ] Implement ContextAggregator, `foregroundEpoch`, and `contextRevision`.
+- [ ] Verify Chrome, Edge, multi-window, and multi-profile snapshot correlation.
+- [ ] Confirm that only the tray client accesses SQLite.
 
 ### Phase 2: Timing and Reviews
 
@@ -478,4 +702,3 @@ Before public distribution, evaluate:
 - [ ] Test Chrome, Edge, and Brave.
 - [ ] Complete migration and failure-recovery testing.
 - [ ] Evaluate code signing and public distribution.
-
