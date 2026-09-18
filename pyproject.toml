@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "lock-in"
 version = "0.1.0"
 description = "A local-first focus assistant for Windows"
-readme = "README.en.md"
+readme = "README.md"
 requires-python = ">=3.12"
 dependencies = []
 

@@ -2,7 +2,7 @@
 
 English
 
-This document describes the technical architecture of the Lock-In Windows client and browser extension. For product features and user-facing behavior, see [README.en.md](README.en.md).
+This document describes the technical architecture of the Lock-In Windows client and browser extension. For product features and user-facing behavior, see [README.md](README.md). For the production delivery sequence, see [PLAN.md](PLAN.md).
 
 ## Technical Goals
 
