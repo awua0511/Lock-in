@@ -667,12 +667,12 @@ Risk-validation progress:
 ### Phase 1: Application Allowlist Prototype
 
 - [x] Create the system tray application.
-- [ ] Implement work schedules.
-- [ ] Monitor foreground-window changes.
-- [ ] Resolve foreground application identities.
-- [ ] Add applications from the recent-app list.
-- [ ] Prompt for non-allowlisted applications.
-- [ ] Record return and continue decisions.
+- [x] Implement work schedules.
+- [x] Monitor foreground-window changes.
+- [x] Resolve foreground application identities.
+- [x] Add applications from the recent-app list.
+- [x] Prompt for non-allowlisted applications.
+- [x] Record return and continue decisions.
 
 ### Phase 1 Addendum: Process Boundaries and Context Aggregation
 

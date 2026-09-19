@@ -5,7 +5,8 @@ import threading
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QCoreApplication, QObject, QThread, QTimer, Slot
+from PySide6.QtCore import QObject, QThread, QTimer, Slot
+from PySide6.QtWidgets import QApplication
 
 from lock_in.ui.bridge import QtUiBridge
 
@@ -21,7 +22,7 @@ class Receiver(QObject):
 
 
 def test_worker_emission_is_delivered_on_qt_thread() -> None:
-    application = QCoreApplication.instance() or QCoreApplication([])
+    application = QApplication.instance() or QApplication([])
     bridge = QtUiBridge()
     receiver = Receiver()
     bridge.show_main_window_signal.connect(receiver.receive)

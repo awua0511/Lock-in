@@ -27,8 +27,10 @@ SAFE_LOG_CODES = frozenset(
         "component_failed",
         "component_started",
         "component_stopped",
+        "configuration_operation_failed",
         "duplicate_start_rejected",
         "event_handler_failed",
+        "history_write_failed",
     }
 )
 

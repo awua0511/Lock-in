@@ -1,6 +1,6 @@
 # ADR 0004: Use One Serialized SQLite Owner
 
-- Status: Proposed in Milestone 2; awaiting acceptance
+- Status: Accepted in Milestone 2
 - Date: 2026-09-18
 
 ## Context

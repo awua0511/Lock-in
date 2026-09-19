@@ -18,16 +18,26 @@ from lock_in.app.config import (
     application_data_directory,
     log_directory,
 )
+from lock_in.app.configuration_service import ConfigurationService
 from lock_in.app.coordinator import ApplicationCoordinator
 from lock_in.app.event_bus import SerializedEventBus
-from lock_in.app.events import ApplicationEvent, ApplicationEventKind
+from lock_in.app.events import (
+    ApplicationEvent,
+    ApplicationEventKind,
+    PromptDecisionEvent,
+)
+from lock_in.app.focus_service import FocusApplicationService
 from lock_in.app.lifecycle import ApplicationLifecycle
 from lock_in.app.logging_setup import configure_application_logging, safe_log
+from lock_in.monitoring.foreground_service import ForegroundMonitoringService
 from lock_in.platform.windows.local_identity import (
     SingleInstanceMutex,
     application_mutex_name,
 )
+from lock_in.platform.windows.window_activation import WindowActivator
+from lock_in.rules.application_policy import ApplicationFocusPolicy
 from lock_in.storage.database import database_path
+from lock_in.storage.repositories import Repositories
 from lock_in.storage.worker import DatabaseWorker
 
 
@@ -86,21 +96,84 @@ def _run_application(args: argparse.Namespace, logger: logging.Logger) -> int:
     application.setQuitOnLastWindowClosed(False)
 
     bridge = QtUiBridge()
-    coordinator = ApplicationCoordinator(bridge, logger)
-    event_bus = SerializedEventBus(coordinator.handle, logger)
     database_worker = DatabaseWorker(
         database_path(args.data_directory or application_data_directory())
     )
-    lifecycle = ApplicationLifecycle((database_worker,), event_bus, logger)
+    repositories = Repositories.create(database_worker)
+    focus_service = FocusApplicationService(
+        ApplicationFocusPolicy(),
+        repositories.history,
+        bridge,
+        WindowActivator(),
+        logger,
+    )
+    configuration_service = ConfigurationService(
+        repositories,
+        focus_service,
+        bridge,
+        logger,
+        lambda configuration: event_bus.publish(
+            ApplicationEvent(
+                kind=ApplicationEventKind.CONFIGURATION_LOADED,
+                source="configuration",
+                payload=configuration,
+            )
+        ),
+    )
+    coordinator = ApplicationCoordinator(
+        bridge,
+        logger,
+        configuration=configuration_service,
+        focus=focus_service,
+    )
+    event_bus = SerializedEventBus(coordinator.handle, logger)
+    monitor = ForegroundMonitoringService(
+        lambda observation: event_bus.publish(
+            ApplicationEvent(
+                kind=ApplicationEventKind.FOREGROUND_OBSERVED,
+                source="foreground_monitor",
+                payload=observation,
+            )
+        )
+    )
+    lifecycle = ApplicationLifecycle(
+        (database_worker, configuration_service, focus_service, monitor),
+        event_bus,
+        logger,
+    )
 
-    def publish(kind: ApplicationEventKind, source: str) -> None:
-        event_bus.publish(ApplicationEvent(kind=kind, source=source))
+    def publish(
+        kind: ApplicationEventKind,
+        source: str,
+        payload: object | None = None,
+    ) -> None:
+        event_bus.publish(ApplicationEvent(kind=kind, source=source, payload=payload))
 
     shell = DesktopShell(
         application,
         bridge,
         lambda: publish(ApplicationEventKind.SHOW_MAIN_WINDOW, "tray"),
         lambda: publish(ApplicationEventKind.SHUTDOWN_REQUESTED, "tray"),
+        lambda schedule: publish(
+            ApplicationEventKind.SAVE_SCHEDULE, "settings", schedule
+        ),
+        lambda schedule_id: publish(
+            ApplicationEventKind.DELETE_SCHEDULE, "settings", schedule_id
+        ),
+        lambda entry: publish(
+            ApplicationEventKind.SAVE_APPLICATION_ALLOWLIST, "settings", entry
+        ),
+        lambda entry_id: publish(
+            ApplicationEventKind.DELETE_APPLICATION_ALLOWLIST, "settings", entry_id
+        ),
+        lambda enabled: publish(
+            ApplicationEventKind.SET_APPLICATION_CAPTURE, "settings", enabled
+        ),
+        lambda prompt_id, decision: publish(
+            ApplicationEventKind.PROMPT_DECIDED,
+            "prompt",
+            PromptDecisionEvent(prompt_id, decision.value),
+        ),
         tray_enabled=not args.no_tray,
     )
     shutdown_lock = threading.Lock()

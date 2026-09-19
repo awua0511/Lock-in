@@ -12,6 +12,7 @@ from lock_in.app.event_bus import SerializedEventBus
 from lock_in.app.events import ApplicationEvent, ApplicationEventKind
 from lock_in.app.lifecycle import ApplicationLifecycle
 from lock_in.app.logging_setup import configure_application_logging, safe_log
+from lock_in.rules.application_policy import FocusConfiguration
 
 
 class FakeUi:
@@ -28,9 +29,20 @@ class FakeUi:
     def report_component_failure(self, component: str) -> None:
         self._record("failure", component)
 
+    def update_focus_configuration(self, configuration) -> None:
+        self._record("configuration", str(len(configuration.schedules)))
+
     def _record(self, action: str, value: str | None) -> None:
         self.calls.append((action, value, threading.get_ident()))
         self.called.set()
+
+
+class FakeFocus:
+    def __init__(self) -> None:
+        self.configurations = []
+
+    def update_focus_configuration(self, configuration) -> None:
+        self.configurations.append(configuration)
 
 
 def test_synthetic_event_reaches_coordinator_on_dispatcher_thread(
@@ -55,6 +67,30 @@ def test_synthetic_event_reaches_coordinator_on_dispatcher_thread(
     assert ui.calls[0][:2] == ("show", None)
     assert ui.calls[0][2] == bus.worker_thread_id
     assert ui.calls[0][2] != caller_thread
+
+
+def test_configuration_result_reenters_serialized_coordinator(tmp_path: Path) -> None:
+    ui = FakeUi()
+    focus = FakeFocus()
+    logger = configure_application_logging(tmp_path)
+    coordinator = ApplicationCoordinator(ui, logger, focus=focus)  # type: ignore[arg-type]
+    bus = SerializedEventBus(coordinator.handle, logger)
+    configuration = FocusConfiguration()
+
+    bus.start()
+    assert bus.publish(
+        ApplicationEvent(
+            kind=ApplicationEventKind.CONFIGURATION_LOADED,
+            source="test",
+            payload=configuration,
+        )
+    )
+    assert ui.called.wait(1)
+    assert bus.stop(1)
+
+    assert focus.configurations == [configuration]
+    assert ui.calls[0][0] == "configuration"
+    assert ui.calls[0][2] == bus.worker_thread_id
 
 
 @dataclass

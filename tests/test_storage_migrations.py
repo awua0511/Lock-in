@@ -55,6 +55,13 @@ def test_empty_profile_migrates_to_current_schema(tmp_path: Path) -> None:
         {"version": 2, "name": "history"},
     ]
     assert set(inspection["tables"]) == EXPECTED_TABLES
+    counted = inspect_database(path, include_counts=True)
+    assert counted["counts"] == {
+        "schedules": 0,
+        "application_allowlist": 0,
+        "focus_sessions": 0,
+        "attention_events": 0,
+    }
 
 
 @pytest.mark.parametrize("failed_version", [1, 2])

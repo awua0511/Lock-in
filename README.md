@@ -4,7 +4,7 @@ Lock-In is a local-first focus assistant for Windows. During a user-defined work
 
 Lock-In does not forcibly block software. Its purpose is to interrupt automatic avoidance and turn it into a conscious choice: return to the previous work context or continue intentionally.
 
-> Lock-In is under active development. The four risk-validation experiments and Milestones 0–1 are accepted. The Milestone 2 domain and persistence layer is awaiting acceptance.
+> Lock-In is under active development. The four risk-validation experiments and Milestones 0–2 are accepted. The Milestone 3 application-only focus loop is awaiting acceptance.
 
 ## Project Status
 
@@ -17,7 +17,7 @@ The repository currently contains four completed risk-validation experiments:
 | [3. Browser communication chain](EXPERIMENT_03.md) | Chrome/Edge extension → Native Messaging Host → Named Pipe → single-instance tray process → acknowledgement. |
 | [4. Context aggregation simulator](EXPERIMENT_04.md) | Safe correlation of Windows and browser events, including stale, late, duplicate, out-of-order, ambiguous, and timed-out messages. |
 
-The experiments remain isolated prototypes. Milestone 1 added the production application shell. Milestone 2 adds immutable domain models, atomic SQLite migrations, a single serialized database worker, and typed repositories. The UI does not yet edit schedules or allowlists, and no monitoring or prompting behavior is connected. See [MILESTONE_02.md](MILESTONE_02.md) for acceptance and [PLAN.md](PLAN.md) for the remaining sequence.
+The experiments remain isolated prototypes. Milestone 3 connects the production WinEvent monitor, schedule evaluation, application allowlists, PySide6 decision prompt, best-effort window return, and local attention-event history. Website rules, continued-use timing, and follow-up prompts remain deferred. See [MILESTONE_03.md](MILESTONE_03.md) for acceptance and [PLAN.md](PLAN.md) for the remaining sequence.
 
 ## Product Principles
 
@@ -36,7 +36,7 @@ Users create one-time or weekly recurring work periods. Each schedule selects th
 
 ### Application allowlist
 
-Applications can be added from recently observed foreground applications or by selecting a local executable. Allowlisted applications do not trigger prompts during an active work period.
+Applications can be added by clicking a capture button and switching to the target application. Recently observed applications and direct executable selection remain available as fallbacks. Allowlisted applications do not trigger prompts during an active work period.
 
 ### Website allowlist
 
@@ -152,12 +152,12 @@ src/lock_in/
 ├── domain/              Immutable schedules, allowlists, settings, and history
 ├── experiments/         Standalone risk-validation programs
 ├── ipc/                  Reserved production IPC boundary
-├── monitoring/           Reserved production foreground-monitor boundary
+├── monitoring/           Production foreground-monitor lifecycle adapter
 ├── native_host/         Native Messaging relay and registration
 ├── notifications/       Reserved notification boundary
 ├── platform/windows/    Win32 adapters
 ├── prompts/             Entry-prompt policy prototype
-├── rules/               Reserved pure rules boundary
+├── rules/               Pure schedules, application matching, and prompt policy
 ├── sessions/            Reserved timing boundary
 ├── storage/             SQLite migrations, worker, and typed repositories
 └── ui/                  PySide6 window, tray, and thread-safe signal bridge
@@ -174,6 +174,7 @@ tests/                   Unit and deterministic replay tests
 - [Implementation plan](PLAN.md)
 - [Milestone 1 acceptance](MILESTONE_01.md)
 - [Milestone 2 acceptance](MILESTONE_02.md)
+- [Milestone 3 acceptance](MILESTONE_03.md)
 - [Technical architecture](ARCHITECTURE.en.md)
 - [Validated baseline and acceptance](docs/BASELINE.md)
 - [Supported platforms](docs/SUPPORT.md)

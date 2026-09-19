@@ -14,7 +14,7 @@ from lock_in.app.config import application_data_directory
 from lock_in.storage.database import database_path
 
 
-def inspect_database(path: Path) -> dict[str, Any]:
+def inspect_database(path: Path, *, include_counts: bool = False) -> dict[str, Any]:
     if not path.is_file():
         raise FileNotFoundError(path)
     # Acceptance runs after Lock-In exits, so immutable mode is safe and avoids
@@ -38,7 +38,19 @@ def inspect_database(path: Path) -> dict[str, Any]:
                 "SELECT version, name FROM schema_migrations ORDER BY version"
             ).fetchall()
         ]
-        return {"migrations": migrations, "tables": tables}
+        result: dict[str, Any] = {"migrations": migrations, "tables": tables}
+        if include_counts:
+            count_tables = (
+                "schedules",
+                "application_allowlist",
+                "focus_sessions",
+                "attention_events",
+            )
+            result["counts"] = {
+                table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                for table in count_tables
+            }
+        return result
     finally:
         connection.close()
 
@@ -52,9 +64,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=Path,
         default=database_path(application_data_directory()),
     )
+    parser.add_argument(
+        "--include-counts",
+        action="store_true",
+        help="Include privacy-safe row counts for Milestone 3 acceptance.",
+    )
     args = parser.parse_args(argv)
     try:
-        result = inspect_database(args.database)
+        result = inspect_database(args.database, include_counts=args.include_counts)
     except FileNotFoundError:
         print(
             f"database not found: {args.database}. Start Lock-In once, then Exit.",

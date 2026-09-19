@@ -62,6 +62,8 @@ class Schedule:
         _require_text(self.timezone, "schedule timezone")
         if self.start_time.tzinfo is not None or self.end_time.tzinfo is not None:
             raise ValueError("schedule times must be local wall-clock times")
+        if self.start_time == self.end_time:
+            raise ValueError("schedule start and end times must differ")
         if not self.recurrences:
             raise ValueError("schedule requires at least one recurrence")
         recurrence_ids = {item.id for item in self.recurrences}
