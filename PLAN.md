@@ -4,7 +4,7 @@ This plan begins after the four risk-validation experiments. Its goal is to turn
 
 ## Current Gate
 
-Milestone 0 implementation is complete and awaiting user acceptance. Milestone 1 has not started. The baseline commit and tag remain intentionally uncreated until acceptance.
+Milestones 0 and 1 were accepted on 2026-09-18. Milestone 2 implementation is complete and awaiting user acceptance. Milestone 3 has not started, and no commit or push will be made by Codex.
 
 ## Delivery Strategy
 

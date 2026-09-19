@@ -41,7 +41,7 @@ try {
     $trackedArtifacts = & git ls-files | Where-Object {
         -not $deletedTrackedFiles.ContainsKey($_) -and (
             $_ -match "(^|/)(\.venv|build|dist|htmlcov|\.ruff_cache|\.pytest_cache)(/|$)" -or
-            $_ -match "(capture\.jsonl$|\.log$|\.db(-shm|-wal)?$|\.py[co]$)"
+            $_ -match "(capture\.jsonl$|\.log$|\.(db|sqlite3)(-shm|-wal)?$|\.py[co]$)"
         )
     }
     if ($trackedArtifacts) {
@@ -69,6 +69,8 @@ try {
     }
 
     $expectedEntryPoints = @(
+        "lock-in.exe",
+        "lock-in-inspect-database.exe",
         "lock-in-foreground-monitor.exe",
         "lock-in-entry-prompt.exe",
         "lock-in-native-host.exe",
@@ -103,7 +105,7 @@ try {
         Assert-LastExitCode "Windows communication harness"
     }
 
-    Write-Host "Baseline verification passed." -ForegroundColor Green
+    Write-Host "Repository verification passed." -ForegroundColor Green
 }
 finally {
     Pop-Location

@@ -4,7 +4,7 @@ Lock-In is a local-first focus assistant for Windows. During a user-defined work
 
 Lock-In does not forcibly block software. Its purpose is to interrupt automatic avoidance and turn it into a conscious choice: return to the previous work context or continue intentionally.
 
-> Lock-In is under active development. The four highest-risk technical assumptions have been validated; the production application structure is the next milestone.
+> Lock-In is under active development. The four risk-validation experiments and Milestones 0–1 are accepted. The Milestone 2 domain and persistence layer is awaiting acceptance.
 
 ## Project Status
 
@@ -17,7 +17,7 @@ The repository currently contains four completed risk-validation experiments:
 | [3. Browser communication chain](EXPERIMENT_03.md) | Chrome/Edge extension → Native Messaging Host → Named Pipe → single-instance tray process → acknowledgement. |
 | [4. Context aggregation simulator](EXPERIMENT_04.md) | Safe correlation of Windows and browser events, including stale, late, duplicate, out-of-order, ambiguous, and timed-out messages. |
 
-The experiments are intentionally isolated prototypes. They are validated building blocks, not yet a packaged end-user application. See [PLAN.md](PLAN.md) for the production implementation sequence.
+The experiments remain isolated prototypes. Milestone 1 added the production application shell. Milestone 2 adds immutable domain models, atomic SQLite migrations, a single serialized database worker, and typed repositories. The UI does not yet edit schedules or allowlists, and no monitoring or prompting behavior is connected. See [MILESTONE_02.md](MILESTONE_02.md) for acceptance and [PLAN.md](PLAN.md) for the remaining sequence.
 
 ## Product Principles
 
@@ -87,7 +87,7 @@ See [ARCHITECTURE.en.md](ARCHITECTURE.en.md) for process boundaries, message con
 | Local browser IPC | Native Messaging + Windows Named Pipe |
 | Packaging candidates | PyInstaller or Nuitka |
 
-The current experiments use only Python's standard library where practical. PySide6 and production storage dependencies will be introduced through the formal application milestones rather than mixed into the prototypes.
+The experiments use only Python's standard library where practical. PySide6 is now a production runtime dependency; storage dependencies remain deferred to Milestone 2.
 
 ## Development Setup
 
@@ -111,6 +111,14 @@ Run the complete automated test suite:
 ```powershell
 .\.venv\Scripts\python -m pytest -v
 ```
+
+Run the current production skeleton:
+
+```powershell
+.\.venv\Scripts\lock-in.exe
+```
+
+The source command remains attached to PowerShell while the application runs. The status window appears on startup; closing it hides the window when the tray is available, and **Exit** in the tray menu stops the process.
 
 Run the complete baseline quality gate:
 
@@ -138,12 +146,21 @@ Windows Named Pipe integration tests may require execution outside a restricted 
 
 ```text
 src/lock_in/
+├── app/                 Production lifecycle, event queue, and coordinator
 ├── communication/       Versioned protocol primitives
 ├── context/             ContextAggregator and immutable contexts
+├── domain/              Immutable schedules, allowlists, settings, and history
 ├── experiments/         Standalone risk-validation programs
+├── ipc/                  Reserved production IPC boundary
+├── monitoring/           Reserved production foreground-monitor boundary
 ├── native_host/         Native Messaging relay and registration
+├── notifications/       Reserved notification boundary
 ├── platform/windows/    Win32 adapters
-└── prompts/             Entry-prompt policy prototype
+├── prompts/             Entry-prompt policy prototype
+├── rules/               Reserved pure rules boundary
+├── sessions/            Reserved timing boundary
+├── storage/             SQLite migrations, worker, and typed repositories
+└── ui/                  PySide6 window, tray, and thread-safe signal bridge
 
 browser_extension/
 └── experiment3/         Chrome/Edge communication extension
@@ -155,6 +172,8 @@ tests/                   Unit and deterministic replay tests
 ## Documentation
 
 - [Implementation plan](PLAN.md)
+- [Milestone 1 acceptance](MILESTONE_01.md)
+- [Milestone 2 acceptance](MILESTONE_02.md)
 - [Technical architecture](ARCHITECTURE.en.md)
 - [Validated baseline and acceptance](docs/BASELINE.md)
 - [Supported platforms](docs/SUPPORT.md)

@@ -8,7 +8,9 @@ version = "0.1.0"
 description = "A local-first focus assistant for Windows"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "PySide6>=6.8,<7",
+]
 
 [project.optional-dependencies]
 dev = [
@@ -17,6 +19,8 @@ dev = [
 ]
 
 [project.scripts]
+lock-in = "lock_in.app.main:main"
+lock-in-inspect-database = "lock_in.storage.inspect:main"
 lock-in-foreground-monitor = "lock_in.platform.windows.foreground_monitor:main"
 lock-in-entry-prompt = "lock_in.experiments.entry_prompt:main"
 lock-in-native-host = "lock_in.native_host.main:main"

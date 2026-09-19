@@ -529,6 +529,12 @@ app_settings
 schema_migrations
 ```
 
+Schema versions 1 and 2 implement these tables. Configuration tables are created before history tables so a failed history upgrade cannot invalidate active schedules or allowlists. Application and website allowlist rows contain an optional `schedule_id`: `NULL` represents a global user entry, while a value scopes the entry to one schedule. Foreign keys cascade schedule-owned configuration and set historical session references to `NULL` when a schedule is deleted.
+
+The production process owns one `DatabaseWorker`. That worker opens and migrates SQLite on its own thread, then serializes repository operations submitted by concurrent callers. A second worker for the same resolved path is rejected within the process. UI code receives futures and domain objects; it never receives SQLite connections or rows.
+
+Each migration version runs in a separate `BEGIN IMMEDIATE` transaction. A failed or interrupted version is not recorded and is retried after restart. Before upgrading a non-empty older profile, the client uses SQLite's backup API to create `lock-in.pre-migration.backup.sqlite3`.
+
 ### Application Allowlist Record
 
 ```json
@@ -660,7 +666,7 @@ Risk-validation progress:
 
 ### Phase 1: Application Allowlist Prototype
 
-- [ ] Create the system tray application.
+- [x] Create the system tray application.
 - [ ] Implement work schedules.
 - [ ] Monitor foreground-window changes.
 - [ ] Resolve foreground application identities.
@@ -670,14 +676,14 @@ Risk-validation progress:
 
 ### Phase 1 Addendum: Process Boundaries and Context Aggregation
 
-- [ ] Implement the desktop client's single-instance mutex.
+- [x] Implement the desktop client's single-instance mutex.
 - [ ] Implement the per-user Named Pipe Server and ACL.
 - [ ] Implement the stateless Native Messaging Host.
 - [ ] Define and test handshake, protocol versioning, and message-size limits.
 - [ ] Implement heartbeat, timeout, and bounded reconnection behavior.
 - [ ] Implement ContextAggregator, `foregroundEpoch`, and `contextRevision`.
 - [ ] Verify Chrome, Edge, multi-window, and multi-profile snapshot correlation.
-- [ ] Confirm that only the tray client accesses SQLite.
+- [x] Confirm that only the tray client accesses SQLite.
 
 ### Phase 2: Timing and Reviews
 
@@ -700,5 +706,5 @@ Risk-validation progress:
 - [ ] Package the Windows executable.
 - [ ] Test supported Windows versions and display configurations.
 - [ ] Test Chrome, Edge, and Brave.
-- [ ] Complete migration and failure-recovery testing.
+- [x] Complete migration and failure-recovery testing.
 - [ ] Evaluate code signing and public distribution.
