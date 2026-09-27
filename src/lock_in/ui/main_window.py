@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QSpinBox,
     QTabWidget,
     QTimeEdit,
     QVBoxLayout,
@@ -32,9 +33,11 @@ from lock_in.domain.models import (
     ApplicationAllowlistEntry,
     ApplicationIdentity,
     ApplicationKind,
+    AppSettings,
     Recurrence,
     RecurrenceKind,
     Schedule,
+    WebsiteAllowlistEntry,
 )
 from lock_in.rules.application_policy import FocusConfiguration, RecentApplication
 
@@ -42,6 +45,8 @@ ScheduleCallback = Callable[[Schedule], None]
 IdentifierCallback = Callable[[str], None]
 ApplicationCallback = Callable[[ApplicationAllowlistEntry], None]
 CaptureCallback = Callable[[bool], None]
+SettingsCallback = Callable[[AppSettings], None]
+WebsiteCallback = Callable[[WebsiteAllowlistEntry], None]
 
 
 class MainWindow(QMainWindow):
@@ -54,6 +59,9 @@ class MainWindow(QMainWindow):
         on_save_application: ApplicationCallback,
         on_delete_application: IdentifierCallback,
         on_set_capture: CaptureCallback,
+        on_save_settings: SettingsCallback,
+        on_save_website: WebsiteCallback,
+        on_delete_website: IdentifierCallback,
     ) -> None:
         super().__init__()
         self._hide_on_close = hide_on_close
@@ -62,6 +70,9 @@ class MainWindow(QMainWindow):
         self._on_save_application = on_save_application
         self._on_delete_application = on_delete_application
         self._on_set_capture = on_set_capture
+        self._on_save_settings = on_save_settings
+        self._on_save_website = on_save_website
+        self._on_delete_website = on_delete_website
         self._configuration = FocusConfiguration()
         self._selected_path: str | None = None
         self._capture_active = False
@@ -72,6 +83,8 @@ class MainWindow(QMainWindow):
         tabs.addTab(self._build_overview_tab(), "Overview")
         tabs.addTab(self._build_schedules_tab(), "Schedules")
         tabs.addTab(self._build_applications_tab(), "Applications")
+        tabs.addTab(self._build_settings_tab(), "Settings")
+        tabs.addTab(self._build_websites_tab(), "Websites")
         self.setCentralWidget(tabs)
 
     def _build_overview_tab(self) -> QWidget:
@@ -90,6 +103,9 @@ class MainWindow(QMainWindow):
         self._status = QLabel("Loading local configuration…")
         self._status.setWordWrap(True)
         layout.addWidget(self._status)
+        self._browser_health = QLabel("Browser extension status — Chrome: 0; Edge: 0")
+        self._browser_health.setWordWrap(True)
+        layout.addWidget(self._browser_health)
         layout.addStretch()
         return widget
 
@@ -165,8 +181,59 @@ class MainWindow(QMainWindow):
         layout.addWidget(delete)
         return widget
 
+    def _build_settings_tab(self) -> QWidget:
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        editor = QGroupBox("Follow-up reminder")
+        form = QFormLayout(editor)
+        self._follow_up_seconds = QSpinBox()
+        self._follow_up_seconds.setRange(30, 86_400)
+        self._follow_up_seconds.setSuffix(" seconds")
+        self._follow_up_seconds.setValue(300)
+        save = QPushButton("Save reminder interval")
+        save.clicked.connect(self._save_settings)
+        form.addRow("Remind again after", self._follow_up_seconds)
+        form.addRow(save)
+        layout.addWidget(editor)
+        explanation = QLabel(
+            "The interval counts only while a program you chose to continue "
+            "using remains in the foreground. Lock, sleep, and other windows "
+            "are excluded."
+        )
+        explanation.setWordWrap(True)
+        layout.addWidget(explanation)
+        layout.addStretch()
+        return widget
+
+    def _build_websites_tab(self) -> QWidget:
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        editor = QGroupBox("Add allowed website")
+        form = QFormLayout(editor)
+        self._website_domain = QLineEdit()
+        self._website_domain.setPlaceholderText("example.com")
+        self._website_schedule = QComboBox()
+        self._website_schedule.addItem("All schedules", None)
+        self._website_subdomains = QCheckBox("Include subdomains")
+        self._website_subdomains.setChecked(True)
+        save = QPushButton("Add website")
+        save.clicked.connect(self._save_website)
+        form.addRow("Domain", self._website_domain)
+        form.addRow("Applies to", self._website_schedule)
+        form.addRow(self._website_subdomains)
+        form.addRow(save)
+        layout.addWidget(editor)
+        self._website_list = QListWidget()
+        layout.addWidget(QLabel("Allowed websites"))
+        layout.addWidget(self._website_list)
+        remove = QPushButton("Remove selected website")
+        remove.clicked.connect(self._delete_website)
+        layout.addWidget(remove)
+        return widget
+
     def update_configuration(self, configuration: FocusConfiguration) -> None:
         self._configuration = configuration
+        self._follow_up_seconds.setValue(configuration.settings.follow_up_seconds)
         self._schedule_list.clear()
         day_names = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
         for schedule in configuration.schedules:
@@ -196,6 +263,17 @@ class MainWindow(QMainWindow):
         elif configuration.schedules:
             self._allowlist_schedule.setCurrentIndex(1)
 
+        website_schedule = self._website_schedule.currentData()
+        self._website_schedule.clear()
+        self._website_schedule.addItem("All schedules", None)
+        for schedule in configuration.schedules:
+            self._website_schedule.addItem(schedule.name, schedule.id)
+        website_index = self._website_schedule.findData(website_schedule)
+        if website_index >= 0:
+            self._website_schedule.setCurrentIndex(website_index)
+        elif configuration.schedules:
+            self._website_schedule.setCurrentIndex(1)
+
         self._application_list.clear()
         for entry in configuration.applications:
             scope = schedule_names.get(entry.schedule_id, "All schedules")
@@ -203,6 +281,13 @@ class MainWindow(QMainWindow):
             item.setToolTip(entry.identity.executable_path or "")
             item.setData(Qt.ItemDataRole.UserRole, entry.id)
             self._application_list.addItem(item)
+        self._website_list.clear()
+        for entry in configuration.websites:
+            scope = schedule_names.get(entry.schedule_id, "All schedules")
+            subdomains = "+ subdomains" if entry.include_subdomains else "exact host"
+            item = QListWidgetItem(f"{entry.domain} — {scope} — {subdomains}")
+            item.setData(Qt.ItemDataRole.UserRole, entry.id)
+            self._website_list.addItem(item)
         self._status.setText(
             f"Loaded {len(configuration.schedules)} schedule(s) and "
             f"{len(configuration.applications)} allowed application(s)."
@@ -228,6 +313,9 @@ class MainWindow(QMainWindow):
 
     def report_operation_error(self, operation: str) -> None:
         self._status.setText(f"The operation failed safely: {operation}.")
+
+    def report_browser_health(self, message: str) -> None:
+        self._browser_health.setText(message)
 
     def application_captured(self, application: RecentApplication) -> None:
         self._capture_active = False
@@ -352,3 +440,36 @@ class MainWindow(QMainWindow):
             return
         self._on_delete_application(item.data(Qt.ItemDataRole.UserRole))
         self._status.setText("Removing allowed application…")
+
+    def _save_settings(self) -> None:
+        current = self._configuration.settings
+        self._on_save_settings(
+            AppSettings(
+                review_time=current.review_time,
+                history_retention_days=current.history_retention_days,
+                follow_up_seconds=self._follow_up_seconds.value(),
+            )
+        )
+        self._status.setText("Saving reminder interval…")
+
+    def _save_website(self) -> None:
+        try:
+            entry = WebsiteAllowlistEntry(
+                domain=self._website_domain.text(),
+                schedule_id=self._website_schedule.currentData(),
+                include_subdomains=self._website_subdomains.isChecked(),
+            )
+        except ValueError:
+            self._status.setText("Enter a hostname such as example.com, not a URL.")
+            return
+        self._on_save_website(entry)
+        self._website_domain.clear()
+        self._status.setText("Saving website allowlist entry…")
+
+    def _delete_website(self) -> None:
+        item = self._website_list.currentItem()
+        if item is None:
+            self._status.setText("Select a website to remove.")
+            return
+        self._on_delete_website(item.data(Qt.ItemDataRole.UserRole))
+        self._status.setText("Removing website allowlist entry…")

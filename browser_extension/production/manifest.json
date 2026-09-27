@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "Lock-In",
+  "version": "0.1.0",
+  "description": "Send the active site's hostname to the local Lock-In desktop app.",
+  "permissions": ["nativeMessaging", "storage", "tabs", "webNavigation"],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "service-worker.js" },
+  "action": { "default_title": "Lock-In browser connection" }
+}

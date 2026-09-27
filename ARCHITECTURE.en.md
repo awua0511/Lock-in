@@ -79,7 +79,7 @@ lock_in/
 ├── sessions/             Work sessions and foreground timing
 ├── notifications/        Prompts and evening notifications
 ├── storage/              SQLite repositories and migrations
-├── ipc/                  Named Pipe server and connection management
+├── ipc/                  Production Named Pipe server and connection management
 └── platform/windows/     Win32 API wrappers
 
 native_host/
@@ -95,6 +95,8 @@ browser_extension/
 ├── options.html
 └── options.js
 ```
+
+The current production extension is isolated at `browser_extension/production`; the earlier communication-only extension remains under `browser_extension/experiment3`. The production Host relays framed Native Messaging traffic to the per-user Pipe server. The tray process owns browser sessions and dispatches incoming events through the same serialized queue as foreground-monitor events.
 
 The UI must not call Win32 APIs or execute SQL directly. Operating-system events are first converted into internal events and then evaluated by the rules engine.
 
@@ -188,7 +190,7 @@ The list should have a fixed maximum size and be ordered by most recent activati
 
 The Windows client can determine that a browser is in the foreground, but it cannot reliably retrieve the current tab URL. Website allowlisting is therefore implemented by a browser extension.
 
-The extension listens for:
+The production extension listens for:
 
 - `tabs.onActivated` for active-tab changes.
 - `tabs.onUpdated` for URL updates.
@@ -196,7 +198,7 @@ The extension listens for:
 - Browser-window focus changes.
 - Current-context snapshot requests forwarded by the desktop client.
 
-Each extension instance in a browser profile generates and persists a random `clientInstanceId` on first run. It must not contain a username, profile path, or other personally identifying information. Every state message also carries a monotonically increasing `sequence` so duplicated and out-of-order messages can be discarded.
+Each extension instance in a browser profile generates and persists a random `clientInstanceId` on first run. It must not contain a username, profile path, or other personally identifying information. Every state message also carries a monotonically increasing `sequence` so duplicated and out-of-order messages can be discarded. The production client issues a `request_snapshot` containing a `snapshotRequestId` and `foregroundEpoch`; only a matching response can resolve the active browser context. Leaving the browser immediately invalidates that binding. Details and manual acceptance steps are in [Milestone 5](MILESTONE_05.md).
 
 The extension sends only normalized context snapshots:
 
@@ -513,6 +515,10 @@ System resumes                           → Wait for a new foreground event
 ```
 
 Use a monotonic clock for duration calculations so system time or time-zone changes cannot corrupt elapsed time. Wall-clock timestamps are used only for display and daily grouping.
+
+Milestone 4 implements this as a pure `ContinuedUseTimer`. It emits immutable closed segments and latches at most one follow-up for each threshold. Choosing Continue arms a new interval, but timing begins only after a matching foreground observation. A different foreground target invalidates the interval.
+
+The Qt process receives `WM_WTSSESSION_CHANGE` and `WM_POWERBROADCAST` through a native-event filter. Lock and suspend close the current segment. Unlock and resume only make timing eligible again; they do not start a segment without a fresh foreground event. Partial intervals remain memory-only, so restart deliberately discards them instead of deriving elapsed time from wall-clock timestamps.
 
 ## Local Data
 

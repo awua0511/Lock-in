@@ -7,7 +7,9 @@ import logging
 import os
 import sys
 import threading
+import time
 from collections.abc import Sequence
+from datetime import datetime
 from pathlib import Path
 
 from lock_in.app.config import (
@@ -16,7 +18,9 @@ from lock_in.app.config import (
     ORGANIZATION_NAME,
     SHUTDOWN_TIMEOUT_SECONDS,
     application_data_directory,
+    clear_user_requested_exit,
     log_directory,
+    mark_user_requested_exit,
 )
 from lock_in.app.configuration_service import ConfigurationService
 from lock_in.app.coordinator import ApplicationCoordinator
@@ -24,15 +28,21 @@ from lock_in.app.event_bus import SerializedEventBus
 from lock_in.app.events import (
     ApplicationEvent,
     ApplicationEventKind,
+    BrowserIpcEvent,
     PromptDecisionEvent,
+    SystemAvailabilityEvent,
+    TimingTickEvent,
 )
 from lock_in.app.focus_service import FocusApplicationService
 from lock_in.app.lifecycle import ApplicationLifecycle
 from lock_in.app.logging_setup import configure_application_logging, safe_log
+from lock_in.context.application_service import BrowserContextApplicationService
+from lock_in.ipc.pipe_server import BrowserPipeServer
 from lock_in.monitoring.foreground_service import ForegroundMonitoringService
 from lock_in.platform.windows.local_identity import (
     SingleInstanceMutex,
     application_mutex_name,
+    application_pipe_address,
 )
 from lock_in.platform.windows.window_activation import WindowActivator
 from lock_in.rules.application_policy import ApplicationFocusPolicy
@@ -63,6 +73,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.smoke_test_duration is not None and args.smoke_test_duration <= 0:
         print("--smoke-test-duration must be greater than zero.", file=sys.stderr)
         return 2
+
+    clear_user_requested_exit()
 
     logger = configure_application_logging(args.log_directory or log_directory())
     mutex = SingleInstanceMutex(application_mutex_name(args.instance_namespace))
@@ -120,11 +132,29 @@ def _run_application(args: argparse.Namespace, logger: logging.Logger) -> int:
             )
         ),
     )
+    pipe_server = BrowserPipeServer(
+        application_pipe_address(args.instance_namespace),
+        lambda browser_event: event_bus.publish(
+            ApplicationEvent(
+                kind=ApplicationEventKind.BROWSER_IPC_EVENT,
+                source="browser_ipc",
+                payload=BrowserIpcEvent(
+                    browser_event, time.monotonic_ns() // 1_000_000
+                ),
+            )
+        ),
+        logger,
+    )
+    browser_context = BrowserContextApplicationService(
+        focus_service, pipe_server.send, bridge.report_browser_health
+    )
     coordinator = ApplicationCoordinator(
         bridge,
         logger,
         configuration=configuration_service,
         focus=focus_service,
+        browser_context=browser_context,
+        on_explicit_exit=mark_user_requested_exit,
     )
     event_bus = SerializedEventBus(coordinator.handle, logger)
     monitor = ForegroundMonitoringService(
@@ -137,7 +167,13 @@ def _run_application(args: argparse.Namespace, logger: logging.Logger) -> int:
         )
     )
     lifecycle = ApplicationLifecycle(
-        (database_worker, configuration_service, focus_service, monitor),
+        (
+            database_worker,
+            configuration_service,
+            focus_service,
+            monitor,
+            pipe_server,
+        ),
         event_bus,
         logger,
     )
@@ -168,6 +204,20 @@ def _run_application(args: argparse.Namespace, logger: logging.Logger) -> int:
         ),
         lambda enabled: publish(
             ApplicationEventKind.SET_APPLICATION_CAPTURE, "settings", enabled
+        ),
+        lambda settings: publish(
+            ApplicationEventKind.SAVE_SETTINGS, "settings", settings
+        ),
+        lambda available, reason, monotonic_ms: publish(
+            ApplicationEventKind.SYSTEM_AVAILABILITY_CHANGED,
+            "windows_system_events",
+            SystemAvailabilityEvent(available, monotonic_ms, reason),
+        ),
+        lambda entry: publish(
+            ApplicationEventKind.SAVE_WEBSITE_ALLOWLIST, "settings", entry
+        ),
+        lambda entry_id: publish(
+            ApplicationEventKind.DELETE_WEBSITE_ALLOWLIST, "settings", entry_id
         ),
         lambda prompt_id, decision: publish(
             ApplicationEventKind.PROMPT_DECIDED,
@@ -208,6 +258,19 @@ def _run_application(args: argparse.Namespace, logger: logging.Logger) -> int:
     interrupt_timer.timeout.connect(lambda: None)
     interrupt_timer.start(250)
 
+    timing_timer = QTimer()
+    timing_timer.timeout.connect(
+        lambda: publish(
+            ApplicationEventKind.TIMING_TICK,
+            "timing_timer",
+            TimingTickEvent(
+                datetime.now().astimezone(),
+                time.monotonic_ns() // 1_000_000,
+            ),
+        )
+    )
+    timing_timer.start(1_000)
+
     if args.smoke_test_duration is not None:
         QTimer.singleShot(
             round(args.smoke_test_duration * 1000),
@@ -221,6 +284,7 @@ def _run_application(args: argparse.Namespace, logger: logging.Logger) -> int:
         return 130
     finally:
         interrupt_timer.stop()
+        timing_timer.stop()
         shutdown()
 
 

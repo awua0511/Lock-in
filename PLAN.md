@@ -4,7 +4,7 @@ This plan begins after the four risk-validation experiments. Its goal is to turn
 
 ## Current Gate
 
-Milestones 0–2 were accepted on 2026-09-18. Milestone 3 implementation is complete and awaiting user acceptance. Milestone 4 has not started, and no commit or push will be made by Codex.
+Milestones 0–4 were accepted by 2026-09-23. Milestone 5 implementation is ready for automated and manual acceptance; no commit or push will be made by Codex.
 
 ## Delivery Strategy
 
@@ -175,7 +175,7 @@ app_settings
 - A browser context is evaluated only when `websiteEvaluationAllowed` is true.
 - Stale, late, duplicate, out-of-order, ambiguous, and timed-out snapshots cannot trigger prompts.
 - A new foreground epoch never inherits the previous domain.
-- Host crash, tray restart, and extension reload recover without duplicating decisions.
+- Host crash, tray restart, and extension reload recover without duplicating decisions; a tray Exit explicitly requested by the user is not undone by reconnect auto-start.
 - Domain matching never treats `example.com.evil.test` as a subdomain of `example.com`.
 
 ## Milestone 6: Reviews and Local Notifications

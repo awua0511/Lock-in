@@ -167,6 +167,56 @@ def test_proactive_snapshot_updates_only_bound_profile() -> None:
     assert proactive.context.context_revision == resolved.context.context_revision + 1
 
 
+def test_proactive_snapshot_recovers_unknown_context_with_fresh_correlation() -> None:
+    aggregator = ContextAggregator()
+    aggregator.connect_client(CLIENT_A)
+    aggregator.foreground_changed(received_ms=0, application=CHROME)
+    aggregator.browser_snapshot(snapshot(20, 1, "github.com"))
+    aggregator.browser_snapshot(
+        snapshot(30, 2, None, request_id=None, epoch=None, focused=True)
+    )
+
+    refresh = aggregator.browser_snapshot(
+        snapshot(40, 3, "youtube.com", request_id=None, epoch=None)
+    )
+
+    assert refresh.context is not None
+    assert refresh.context.resolution == ContextResolution.PENDING
+    assert refresh.snapshot_request is not None
+    assert refresh.snapshot_request.foreground_epoch == refresh.context.foreground_epoch
+
+    recovered = aggregator.browser_snapshot(
+        snapshot(
+            50,
+            4,
+            "youtube.com",
+            request_id=refresh.snapshot_request.request_id,
+            epoch=refresh.snapshot_request.foreground_epoch,
+        )
+    )
+
+    assert recovered.context is not None
+    assert recovered.context.resolution == ContextResolution.RESOLVED
+    assert recovered.context.browser is not None
+    assert recovered.context.browser.domain == "youtube.com"
+
+
+def test_unfocused_browser_update_does_not_invalidate_current_site() -> None:
+    aggregator = ContextAggregator()
+    aggregator.connect_client(CLIENT_A)
+    aggregator.foreground_changed(received_ms=0, application=CHROME)
+    resolved = aggregator.browser_snapshot(snapshot(20, 1, "youtube.com"))
+
+    unfocused = aggregator.browser_snapshot(
+        snapshot(30, 2, "youtube.com", request_id=None, epoch=None, focused=False)
+    )
+
+    assert resolved.context is not None and resolved.context.website_evaluation_allowed
+    assert unfocused.disposition == EventDisposition.IGNORED
+    assert unfocused.reason == "browser_window_not_foreground"
+    assert unfocused.context == resolved.context
+
+
 def test_out_of_order_snapshot_cannot_change_context() -> None:
     aggregator = ContextAggregator()
     aggregator.connect_client(CLIENT_A)
@@ -196,3 +246,18 @@ def test_new_browser_epoch_starts_pending_without_previous_domain() -> None:
     assert new_epoch.context.resolution == ContextResolution.PENDING
     assert new_epoch.context.browser is None
     assert new_epoch.context.website_evaluation_allowed is False
+
+
+def test_bound_profile_disconnect_invalidates_resolved_domain() -> None:
+    aggregator = ContextAggregator()
+    aggregator.connect_client(CLIENT_A)
+    aggregator.foreground_changed(received_ms=0, application=CHROME)
+    resolved = aggregator.browser_snapshot(snapshot(20, 1, "github.com"))
+
+    disconnected = aggregator.disconnect_client("connection-a", received_ms=30)
+
+    assert resolved.context is not None and resolved.context.website_evaluation_allowed
+    assert disconnected.context_changed
+    assert disconnected.context is not None
+    assert disconnected.context.resolution is ContextResolution.UNKNOWN
+    assert disconnected.context.browser is None

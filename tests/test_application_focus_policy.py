@@ -216,3 +216,26 @@ def test_recent_applications_are_deduplicated_and_bounded() -> None:
     assert len(recent) == 2
     assert recent[0].display_name == "ONE.EXE".removesuffix(".exe")
     assert recent[1].display_name == "Two"
+
+
+def test_schedule_refresh_stops_follow_up_when_target_becomes_allowed() -> None:
+    first = _schedule(schedule_id="a", start=time(13, 0), end=time(14, 0))
+    second = _schedule(schedule_id="b", start=time(13, 30), end=time(14, 0))
+    policy = ApplicationFocusPolicy(own_pid=999)
+    policy.update_configuration(
+        FocusConfiguration(
+            (first, second),
+            (_allowed(r"C:\Games\Steam.exe", "b"),),
+        )
+    )
+    prompt = policy.observe(
+        _observation(1, 20, r"C:\Games\Steam.exe"),
+        datetime(2026, 9, 14, 13, 5, tzinfo=UTC),
+    ).prompt
+    assert prompt is not None
+    policy.decide(prompt.id, PolicyDecision.CONTINUE)
+
+    update = policy.refresh(datetime(2026, 9, 14, 13, 31, tzinfo=UTC))
+
+    assert update.active_schedules == (first, second)
+    assert policy.continued_key is None

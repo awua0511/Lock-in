@@ -31,6 +31,7 @@ SAFE_LOG_CODES = frozenset(
         "duplicate_start_rejected",
         "event_handler_failed",
         "history_write_failed",
+        "window_activation_failed",
     }
 )
 

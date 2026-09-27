@@ -1,6 +1,6 @@
 # ADR 0005: Keep the Application Focus Loop Advisory and Event-Driven
 
-- Status: Proposed in Milestone 3; awaiting acceptance
+- Status: Accepted in Milestone 3
 - Date: 2026-09-18
 
 ## Context

@@ -104,6 +104,11 @@ def application_mutex_name(namespace: str = "default") -> str:
     return rf"Local\LockIn.{user_scope_hash(namespace)}.application.v1"
 
 
+def application_pipe_address(namespace: str = "default") -> str:
+    """Return the current user's production browser IPC pipe address."""
+    return rf"\\.\pipe\LockIn.{user_scope_hash(namespace)}.application.v1"
+
+
 class SingleInstanceMutex:
     def __init__(self, name: str) -> None:
         if os.name != "nt":

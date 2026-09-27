@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import StrEnum
 
 
@@ -18,7 +19,13 @@ class ApplicationEventKind(StrEnum):
     DELETE_SCHEDULE = "delete_schedule"
     SAVE_APPLICATION_ALLOWLIST = "save_application_allowlist"
     DELETE_APPLICATION_ALLOWLIST = "delete_application_allowlist"
+    SAVE_WEBSITE_ALLOWLIST = "save_website_allowlist"
+    DELETE_WEBSITE_ALLOWLIST = "delete_website_allowlist"
     SET_APPLICATION_CAPTURE = "set_application_capture"
+    SAVE_SETTINGS = "save_settings"
+    TIMING_TICK = "timing_tick"
+    SYSTEM_AVAILABILITY_CHANGED = "system_availability_changed"
+    BROWSER_IPC_EVENT = "browser_ipc_event"
     CONFIGURATION_LOADED = "configuration_loaded"
 
 
@@ -52,3 +59,22 @@ class ApplicationEvent:
 class PromptDecisionEvent:
     prompt_id: str
     decision: str
+
+
+@dataclass(frozen=True, slots=True)
+class TimingTickEvent:
+    wall_time: datetime
+    monotonic_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class SystemAvailabilityEvent:
+    available: bool
+    monotonic_ms: int
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class BrowserIpcEvent:
+    event: dict[str, object]
+    monotonic_ms: int

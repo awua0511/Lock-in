@@ -9,7 +9,12 @@ from concurrent.futures import Future
 from typing import Protocol
 
 from lock_in.app.logging_setup import safe_log
-from lock_in.domain.models import ApplicationAllowlistEntry, Schedule
+from lock_in.domain.models import (
+    ApplicationAllowlistEntry,
+    AppSettings,
+    Schedule,
+    WebsiteAllowlistEntry,
+)
 from lock_in.rules.application_policy import FocusConfiguration
 from lock_in.storage.repositories import Repositories
 
@@ -45,7 +50,9 @@ class ConfigurationService:
         applications = self._repositories.allowlist.list_applications().result(
             timeout=3
         )
-        self._apply(FocusConfiguration(schedules, applications))
+        settings = self._repositories.settings.load().result(timeout=3)
+        websites = self._repositories.allowlist.list_websites().result(timeout=3)
+        self._apply(FocusConfiguration(schedules, applications, settings, websites))
 
     def stop(self, timeout: float) -> None:
         del timeout
@@ -73,6 +80,21 @@ class ConfigurationService:
             "delete_application_allowlist",
         )
 
+    def save_settings(self, settings: AppSettings) -> None:
+        self._after_write(self._repositories.settings.save(settings), "save_settings")
+
+    def save_website(self, entry: WebsiteAllowlistEntry) -> None:
+        self._after_write(
+            self._repositories.allowlist.save_website(entry),
+            "save_website_allowlist",
+        )
+
+    def delete_website(self, entry_id: str) -> None:
+        self._after_write(
+            self._repositories.allowlist.delete_website(entry_id),
+            "delete_website_allowlist",
+        )
+
     def reload_async(self) -> None:
         with self._lock:
             if self._stopped:
@@ -81,6 +103,8 @@ class ConfigurationService:
             generation = self._generation
         schedule_future = self._repositories.schedules.list_all()
         application_future = self._repositories.allowlist.list_applications()
+        settings_future = self._repositories.settings.load()
+        website_future = self._repositories.allowlist.list_websites()
         results: dict[str, object] = {}
         results_lock = threading.Lock()
 
@@ -92,21 +116,27 @@ class ConfigurationService:
                 return
             with results_lock:
                 results[name] = result
-                if len(results) != 2:
+                if len(results) != 4:
                     return
                 schedules = results["schedules"]
                 applications = results["applications"]
+                settings = results["settings"]
+                websites = results["websites"]
             with self._lock:
                 if self._stopped or generation != self._generation:
                     return
             self._publish_configuration(
-                FocusConfiguration(schedules, applications)  # type: ignore[arg-type]
+                FocusConfiguration(  # type: ignore[arg-type]
+                    schedules, applications, settings, websites
+                )
             )
 
         schedule_future.add_done_callback(lambda future: complete("schedules", future))
         application_future.add_done_callback(
             lambda future: complete("applications", future)
         )
+        settings_future.add_done_callback(lambda future: complete("settings", future))
+        website_future.add_done_callback(lambda future: complete("websites", future))
 
     def _after_write(self, future: Future[object], operation: str) -> None:
         def complete(completed: Future[object]) -> None:

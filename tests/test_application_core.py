@@ -93,6 +93,26 @@ def test_configuration_result_reenters_serialized_coordinator(tmp_path: Path) ->
     assert ui.calls[0][2] == bus.worker_thread_id
 
 
+def test_explicit_exit_records_intent_before_requesting_quit() -> None:
+    calls = []
+    ui = FakeUi()
+    coordinator = ApplicationCoordinator(
+        ui,
+        logging.getLogger("test.explicit-exit"),
+        on_explicit_exit=lambda: calls.append("marker"),
+    )
+
+    coordinator.handle(
+        ApplicationEvent(
+            kind=ApplicationEventKind.SHUTDOWN_REQUESTED,
+            source="tray",
+        )
+    )
+
+    assert calls == ["marker"]
+    assert ui.calls[0][0] == "quit"
+
+
 @dataclass
 class FakeComponent:
     name: str

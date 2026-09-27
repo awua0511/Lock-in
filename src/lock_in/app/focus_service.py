@@ -11,13 +11,17 @@ from datetime import datetime
 from typing import Protocol
 
 from lock_in.app.logging_setup import safe_log
+from lock_in.context.aggregator import ContextResolution, ForegroundContext
 from lock_in.domain.models import (
     AttentionDecision,
     AttentionEvent,
     FocusSession,
     TargetType,
 )
-from lock_in.platform.windows.foreground_monitor import ForegroundObservation
+from lock_in.platform.windows.foreground_monitor import (
+    ForegroundObservation,
+    ResolutionStatus,
+)
 from lock_in.rules.application_policy import (
     ApplicationFocusPolicy,
     AttentionPrompt,
@@ -26,6 +30,7 @@ from lock_in.rules.application_policy import (
     RecentApplication,
     normalize_windows_path,
 )
+from lock_in.sessions.foreground_timer import ContinuedUseTimer
 from lock_in.storage.repositories import HistoryRepository
 
 
@@ -68,6 +73,7 @@ class FocusApplicationService:
         self._pending_writes: set[Future[object]] = set()
         self._writes_lock = threading.Lock()
         self._capture_next_application = False
+        self._timer = ContinuedUseTimer()
 
     def start(self) -> None:
         return
@@ -118,10 +124,26 @@ class FocusApplicationService:
             )
             del self._sessions[schedule_id]
         self._policy.update_configuration(configuration)
+        self._timer.set_threshold(configuration.settings.follow_up_seconds)
+        self._timer.cancel()
 
     def observe_foreground(self, observation: ForegroundObservation) -> None:
         now = self._clock()
         update = self._policy.observe(observation, now)
+        if not self._policy.is_own_observation(observation):
+            timing_key = None
+            if (
+                observation.status is ResolutionStatus.IDENTIFIED
+                and observation.hwnd is not None
+                and observation.executable_path
+            ):
+                timing_key = (
+                    observation.hwnd,
+                    normalize_windows_path(observation.executable_path),
+                )
+            self._timer.observe(timing_key, observation.monotonic_ms)
+            if self._policy.continued_key is None:
+                self._timer.cancel()
         if update.active_schedules is not None:
             self._sync_sessions(update.active_schedules, now)
         if update.recent_applications is not None:
@@ -149,14 +171,106 @@ class FocusApplicationService:
         result = self._policy.decide(prompt_id, decision)
         if result is None:
             return
+        # Activate while the decision dialog still owns foreground permission.
+        activated = self._activator.activate(result.activate_hwnd)
+        if result.activate_hwnd is not None and not activated:
+            safe_log(
+                self._logger,
+                logging.WARNING,
+                "window_activation_failed",
+                operation="activate_decision_target",
+                state="foreground_request_denied",
+            )
         self._ui.dismiss_attention_prompt()
-        self._activator.activate(result.activate_hwnd)
+        if decision is PolicyDecision.CONTINUE:
+            if result.prompt.target_type is TargetType.APPLICATION:
+                self._timer.arm(
+                    (
+                        result.prompt.target_hwnd,
+                        result.prompt.target_key
+                        or normalize_windows_path(result.prompt.executable_path),
+                    )
+                )
+            else:
+                self._timer.cancel()
+        else:
+            self._timer.cancel()
         recorded = (
             AttentionDecision.RETURN
             if decision is PolicyDecision.RETURN
             else AttentionDecision.CONTINUE
         )
         self._record_attention(result.prompt, recorded, self._clock())
+
+    def observe_website_context(
+        self,
+        context: ForegroundContext | None,
+        *,
+        hwnd: int,
+        pid: int,
+        executable_path: str,
+        browser_name: str,
+    ) -> None:
+        if (
+            context is None
+            or context.resolution is not ContextResolution.RESOLVED
+            or context.browser is None
+            or not context.website_evaluation_allowed
+        ):
+            preserve_continued = (
+                context is not None and context.application.browser_kind is not None
+            )
+            if self._policy.invalidate_website_context(
+                preserve_continued=preserve_continued
+            ):
+                self._ui.dismiss_attention_prompt()
+            return
+        update = self._policy.observe_website(
+            context_id=context.context_id,
+            foreground_epoch=context.foreground_epoch,
+            revision=context.context_revision,
+            hwnd=hwnd,
+            pid=pid,
+            browser_name=browser_name,
+            executable_path=executable_path,
+            domain=context.browser.domain,
+            now=self._clock(),
+        )
+        now = self._clock()
+        if update.active_schedules is not None:
+            self._sync_sessions(update.active_schedules, now)
+        if update.dismiss_prompt:
+            self._ui.dismiss_attention_prompt()
+        if update.prompt is not None:
+            self._record_attention(update.prompt, AttentionDecision.PROMPT_SHOWN, now)
+            self._ui.show_attention_prompt(update.prompt)
+
+    def tick(self, now: datetime, monotonic_ms: int) -> None:
+        update = self._policy.refresh(now)
+        if update.active_schedules is not None:
+            self._sync_sessions(update.active_schedules, now)
+        if update.dismiss_prompt:
+            self._ui.dismiss_attention_prompt()
+        if self._policy.continued_key is None:
+            self._timer.cancel()
+            return
+        due = self._timer.tick(monotonic_ms)
+        if due is None:
+            return
+        prompt = self._policy.follow_up(due.foreground_ms // 1000, now)
+        if prompt is None:
+            self._timer.cancel()
+            return
+        self._record_attention(prompt, AttentionDecision.PROMPT_SHOWN, now)
+        self._ui.show_attention_prompt(prompt)
+
+    def system_availability_changed(self, available: bool, monotonic_ms: int) -> None:
+        if available:
+            self._timer.resume()
+            return
+        self._timer.suspend(monotonic_ms)
+        if self._policy.pause_for_system_unavailability():
+            self._ui.dismiss_attention_prompt()
 
     def _sync_sessions(self, active_schedules, now: datetime) -> None:
         active_ids = {schedule.id for schedule in active_schedules}
@@ -205,9 +319,11 @@ class FocusApplicationService:
                 AttentionEvent(
                     focus_session_id=session.id,
                     occurred_at=occurred_at,
-                    target_type=TargetType.APPLICATION,
-                    target_key=normalize_windows_path(prompt.executable_path),
+                    target_type=prompt.target_type,
+                    target_key=prompt.target_key
+                    or normalize_windows_path(prompt.executable_path),
                     decision=decision,
+                    foreground_seconds=prompt.foreground_seconds,
                 )
             ),
             "save_attention_event",

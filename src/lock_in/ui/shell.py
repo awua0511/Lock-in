@@ -7,7 +7,13 @@ from collections.abc import Callable
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QApplication, QMenu, QStyle, QSystemTrayIcon
 
-from lock_in.domain.models import ApplicationAllowlistEntry, Schedule
+from lock_in.domain.models import (
+    ApplicationAllowlistEntry,
+    AppSettings,
+    Schedule,
+    WebsiteAllowlistEntry,
+)
+from lock_in.platform.windows.system_events import WindowsSystemEventFilter
 from lock_in.rules.application_policy import (
     AttentionPrompt,
     FocusConfiguration,
@@ -31,6 +37,10 @@ class DesktopShell:
         on_save_application: Callable[[ApplicationAllowlistEntry], None],
         on_delete_application: Callable[[str], None],
         on_set_application_capture: Callable[[bool], None],
+        on_save_settings: Callable[[AppSettings], None],
+        on_system_availability: Callable[[bool, str, int], None],
+        on_save_website: Callable[[WebsiteAllowlistEntry], None],
+        on_delete_website: Callable[[str], None],
         on_prompt_decision: Callable[[str, PolicyDecision], None],
         *,
         tray_enabled: bool = True,
@@ -49,8 +59,14 @@ class DesktopShell:
             on_save_application=on_save_application,
             on_delete_application=on_delete_application,
             on_set_capture=on_set_application_capture,
+            on_save_settings=on_save_settings,
+            on_save_website=on_save_website,
+            on_delete_website=on_delete_website,
         )
         application.setQuitOnLastWindowClosed(not tray_available)
+        self._system_events = WindowsSystemEventFilter(
+            int(self._window.winId()), on_system_availability
+        )
 
         bridge.show_main_window_signal.connect(self.show_main_window)
         bridge.quit_signal.connect(application.quit)
@@ -61,6 +77,7 @@ class DesktopShell:
         bridge.show_attention_prompt_signal.connect(self.show_attention_prompt)
         bridge.dismiss_attention_prompt_signal.connect(self.dismiss_attention_prompt)
         bridge.operation_error_signal.connect(self._window.report_operation_error)
+        bridge.browser_health_signal.connect(self._window.report_browser_health)
 
         if tray_available:
             menu = QMenu()
@@ -98,6 +115,7 @@ class DesktopShell:
 
     def close(self) -> None:
         self.dismiss_attention_prompt()
+        self._system_events.close()
         if self._tray is not None:
             self._tray.hide()
 

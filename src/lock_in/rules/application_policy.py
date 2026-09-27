@@ -11,7 +11,15 @@ from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from lock_in.domain.models import ApplicationAllowlistEntry, Recurrence, Schedule
+from lock_in.domain.models import (
+    ApplicationAllowlistEntry,
+    AppSettings,
+    Recurrence,
+    Schedule,
+    TargetType,
+    WebsiteAllowlistEntry,
+    normalize_domain,
+)
 from lock_in.platform.windows.foreground_monitor import (
     ForegroundObservation,
     ResolutionStatus,
@@ -27,6 +35,8 @@ SYSTEM_EXECUTABLES = frozenset(
         "shellexperiencehost.exe",
         "startmenuexperiencehost.exe",
         "taskhostw.exe",
+        "chrome.exe",
+        "msedge.exe",
     }
 )
 
@@ -48,6 +58,8 @@ def executable_name(path: str) -> str:
 class FocusConfiguration:
     schedules: tuple[Schedule, ...] = ()
     applications: tuple[ApplicationAllowlistEntry, ...] = ()
+    settings: AppSettings = AppSettings()
+    websites: tuple[WebsiteAllowlistEntry, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +79,9 @@ class AttentionPrompt:
     return_hwnd: int | None
     schedule_ids: tuple[str, ...]
     schedule_names: tuple[str, ...]
+    foreground_seconds: int = 0
+    target_type: TargetType = TargetType.APPLICATION
+    target_key: str | None = None
 
 
 class PolicyDecision(StrEnum):
@@ -151,7 +166,9 @@ class ApplicationFocusPolicy:
         self._current_key: tuple[int, str] | None = None
         self._continued_key: tuple[int, str] | None = None
         self._last_allowed_hwnd: int | None = None
+        self._last_non_browser_window_hwnd: int | None = None
         self._prompt: AttentionPrompt | None = None
+        self._continued_prompt: AttentionPrompt | None = None
 
     @property
     def active_prompt(self) -> AttentionPrompt | None:
@@ -160,6 +177,13 @@ class ApplicationFocusPolicy:
     @property
     def recent_applications(self) -> tuple[RecentApplication, ...]:
         return tuple(reversed(self._recent.values()))
+
+    @property
+    def continued_key(self) -> tuple[int, str] | None:
+        return self._continued_key
+
+    def is_own_observation(self, observation: ForegroundObservation) -> bool:
+        return observation.pid == self._own_pid
 
     def update_configuration(self, configuration: FocusConfiguration) -> None:
         self._configuration = configuration
@@ -184,9 +208,12 @@ class ApplicationFocusPolicy:
         if key == self._current_key:
             return PolicyUpdate()
         self._current_key = key
+        if executable_name(path) not in {"chrome.exe", "msedge.exe"}:
+            self._last_non_browser_window_hwnd = observation.hwnd
 
         if self._continued_key is not None and key != self._continued_key:
             self._continued_key = None
+            self._continued_prompt = None
 
         recent = self._observe_recent(observation, path)
         active = active_schedules_at(self._configuration.schedules, now)
@@ -215,6 +242,7 @@ class ApplicationFocusPolicy:
             return_hwnd=self._last_allowed_hwnd,
             schedule_ids=tuple(schedule.id for schedule in active),
             schedule_names=tuple(schedule.name for schedule in active),
+            target_key=path,
         )
         dismiss = self._prompt is not None
         self._prompt = prompt
@@ -230,18 +258,179 @@ class ApplicationFocusPolicy:
         if prompt is None or prompt.id != prompt_id:
             return None
         self._prompt = None
-        key = (prompt.target_hwnd, normalize_windows_path(prompt.executable_path))
+        key = (
+            prompt.target_hwnd,
+            prompt.target_key or normalize_windows_path(prompt.executable_path),
+        )
         if decision is PolicyDecision.CONTINUE:
             self._continued_key = key
+            self._continued_prompt = prompt
             activate_hwnd = prompt.target_hwnd
         else:
             self._continued_key = None
+            self._continued_prompt = None
             activate_hwnd = prompt.return_hwnd
         return DecisionResult(prompt, decision, activate_hwnd)
 
     def cancel_prompt(self) -> None:
         """Discard a prompt created while selecting an application."""
         self._prompt = None
+
+    def observe_website(
+        self,
+        *,
+        context_id: str,
+        foreground_epoch: int,
+        revision: int,
+        hwnd: int,
+        pid: int,
+        browser_name: str,
+        executable_path: str,
+        domain: str,
+        now: datetime,
+    ) -> PolicyUpdate:
+        """Evaluate one resolved browser hostname against active site rules."""
+        normalized = normalize_domain(domain)
+        marker = (context_id, foreground_epoch, revision, hwnd, normalized)
+        if getattr(self, "_website_marker", None) == marker:
+            return PolicyUpdate()
+        self._website_marker = marker
+        key = (hwnd, normalized)
+        if self._continued_key is not None and self._continued_key != key:
+            self._continued_key = None
+            self._continued_prompt = None
+        active = active_schedules_at(self._configuration.schedules, now)
+        allowed = not active or self._is_website_allowed(normalized, active)
+        if allowed:
+            dismiss = self._prompt is not None
+            self._prompt = None
+            self._last_allowed_hwnd = hwnd
+            return PolicyUpdate(dismiss_prompt=dismiss, active_schedules=active)
+        if key == self._continued_key:
+            return PolicyUpdate(active_schedules=active)
+        if (
+            self._prompt is not None
+            and self._prompt.target_type is TargetType.WEBSITE
+            and self._prompt.target_hwnd == hwnd
+            and self._prompt.target_key == normalized
+        ):
+            # Repeated tab/update events for the same unresolved site must not
+            # replace the prompt ID; its decision may already be in flight.
+            return PolicyUpdate(active_schedules=active)
+        prompt = AttentionPrompt(
+            id=str(uuid.uuid4()),
+            target_hwnd=hwnd,
+            target_pid=pid,
+            application_name=browser_name,
+            executable_path=executable_path,
+            return_hwnd=self._last_non_browser_window_hwnd,
+            schedule_ids=tuple(schedule.id for schedule in active),
+            schedule_names=tuple(schedule.name for schedule in active),
+            target_type=TargetType.WEBSITE,
+            target_key=normalized,
+        )
+        dismiss = self._prompt is not None
+        self._prompt = prompt
+        return PolicyUpdate(
+            prompt=prompt,
+            dismiss_prompt=dismiss,
+            active_schedules=active,
+        )
+
+    def _is_website_allowed(self, domain: str, schedules: tuple[Schedule, ...]) -> bool:
+        active_ids = {schedule.id for schedule in schedules}
+        return any(
+            entry.enabled
+            and (entry.schedule_id is None or entry.schedule_id in active_ids)
+            and (
+                domain == entry.domain
+                or (entry.include_subdomains and domain.endswith("." + entry.domain))
+            )
+            for entry in self._configuration.websites
+        )
+
+    def pause_for_system_unavailability(self) -> bool:
+        """Dismiss prompts across lock/sleep while preserving continued consent."""
+        dismiss = self._prompt is not None
+        self._prompt = None
+        if self._continued_key is None:
+            self._current_key = None
+            self._continued_prompt = None
+        return dismiss
+
+    def invalidate_website_context(self, *, preserve_continued: bool = False) -> bool:
+        """Discard stale website prompts, optionally preserving same-entry consent."""
+        dismiss = (
+            self._prompt is not None and self._prompt.target_type is TargetType.WEBSITE
+        )
+        if dismiss:
+            self._prompt = None
+        if not preserve_continued and (
+            self._continued_prompt is not None
+            and self._continued_prompt.target_type is TargetType.WEBSITE
+        ):
+            self._continued_key = None
+            self._continued_prompt = None
+        self._website_marker = None
+        return dismiss
+
+    def refresh(self, now: datetime) -> PolicyUpdate:
+        """Re-evaluate schedule boundaries without inventing a foreground entry."""
+        active = active_schedules_at(self._configuration.schedules, now)
+        continued_path = self._continued_key[1] if self._continued_key else None
+        if active:
+            became_allowed = continued_path is not None and (
+                self._is_system_path(continued_path)
+                or self._is_allowed(continued_path, active)
+            )
+            if not became_allowed:
+                return PolicyUpdate(active_schedules=active)
+            dismiss = self._prompt is not None
+            self._prompt = None
+            self._continued_key = None
+            self._continued_prompt = None
+            return PolicyUpdate(
+                dismiss_prompt=dismiss,
+                active_schedules=active,
+            )
+        dismiss = self._prompt is not None
+        self._prompt = None
+        self._continued_key = None
+        self._continued_prompt = None
+        return PolicyUpdate(dismiss_prompt=dismiss, active_schedules=())
+
+    def follow_up(
+        self, foreground_seconds: int, now: datetime
+    ) -> AttentionPrompt | None:
+        """Create a follow-up only for the still-current continued context."""
+        previous = self._continued_prompt
+        if (
+            previous is None
+            or self._continued_key is None
+            or self._current_key != self._continued_key
+            or self._prompt is not None
+        ):
+            return None
+        active = active_schedules_at(self._configuration.schedules, now)
+        if not active:
+            self._continued_key = None
+            self._continued_prompt = None
+            return None
+        prompt = AttentionPrompt(
+            id=str(uuid.uuid4()),
+            target_hwnd=previous.target_hwnd,
+            target_pid=previous.target_pid,
+            application_name=previous.application_name,
+            executable_path=previous.executable_path,
+            return_hwnd=previous.return_hwnd,
+            schedule_ids=tuple(schedule.id for schedule in active),
+            schedule_names=tuple(schedule.name for schedule in active),
+            foreground_seconds=foreground_seconds,
+            target_type=previous.target_type,
+            target_key=previous.target_key,
+        )
+        self._prompt = prompt
+        return prompt
 
     def _is_allowed(self, path: str, schedules: tuple[Schedule, ...]) -> bool:
         active_ids = {schedule.id for schedule in schedules}

@@ -15,6 +15,7 @@ class QtUiBridge(QObject):
     show_attention_prompt_signal = Signal(object)
     dismiss_attention_prompt_signal = Signal()
     operation_error_signal = Signal(str)
+    browser_health_signal = Signal(str)
 
     def show_main_window(self) -> None:
         self.show_main_window_signal.emit()
@@ -42,3 +43,6 @@ class QtUiBridge(QObject):
 
     def report_operation_error(self, operation: str) -> None:
         self.operation_error_signal.emit(operation)
+
+    def report_browser_health(self, message: str) -> None:
+        self.browser_health_signal.emit(message)

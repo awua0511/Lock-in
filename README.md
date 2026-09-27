@@ -4,7 +4,7 @@ Lock-In is a local-first focus assistant for Windows. During a user-defined work
 
 Lock-In does not forcibly block software. Its purpose is to interrupt automatic avoidance and turn it into a conscious choice: return to the previous work context or continue intentionally.
 
-> Lock-In is under active development. The four risk-validation experiments and Milestones 0–2 are accepted. The Milestone 3 application-only focus loop is awaiting acceptance.
+> Lock-In is under active development. The four risk-validation experiments and Milestones 0–4 are accepted. Milestone 5 browser integration is implemented and awaiting manual acceptance.
 
 ## Project Status
 
@@ -17,7 +17,7 @@ The repository currently contains four completed risk-validation experiments:
 | [3. Browser communication chain](EXPERIMENT_03.md) | Chrome/Edge extension → Native Messaging Host → Named Pipe → single-instance tray process → acknowledgement. |
 | [4. Context aggregation simulator](EXPERIMENT_04.md) | Safe correlation of Windows and browser events, including stale, late, duplicate, out-of-order, ambiguous, and timed-out messages. |
 
-The experiments remain isolated prototypes. Milestone 3 connects the production WinEvent monitor, schedule evaluation, application allowlists, PySide6 decision prompt, best-effort window return, and local attention-event history. Website rules, continued-use timing, and follow-up prompts remain deferred. See [MILESTONE_03.md](MILESTONE_03.md) for acceptance and [PLAN.md](PLAN.md) for the remaining sequence.
+The experiments remain isolated prototypes. Milestone 5 connects Chrome and Edge context to the application focus loop and website allowlists. See [PLAN.md](PLAN.md) for the delivery sequence.
 
 ## Product Principles
 
@@ -175,6 +175,8 @@ tests/                   Unit and deterministic replay tests
 - [Milestone 1 acceptance](MILESTONE_01.md)
 - [Milestone 2 acceptance](MILESTONE_02.md)
 - [Milestone 3 acceptance](MILESTONE_03.md)
+- [Milestone 4 acceptance](MILESTONE_04.md)
+- [Milestone 5 acceptance](MILESTONE_05.md)
 - [Technical architecture](ARCHITECTURE.en.md)
 - [Validated baseline and acceptance](docs/BASELINE.md)
 - [Supported platforms](docs/SUPPORT.md)

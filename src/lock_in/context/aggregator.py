@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 
+from lock_in.domain.models import normalize_domain
+
 
 class ContextResolution(StrEnum):
     PENDING = "pending"
@@ -144,8 +146,20 @@ class ContextAggregator:
     def connect_client(self, client: BrowserClient) -> None:
         self._clients[client.connection_id] = client
 
-    def disconnect_client(self, connection_id: str) -> None:
+    def disconnect_client(
+        self, connection_id: str, *, received_ms: int = 0
+    ) -> AggregationResult:
+        self._require_nonnegative_time(received_ms)
         self._clients.pop(connection_id, None)
+        context = self._context
+        if context is not None and context.browser is not None:
+            if context.browser.connection_id == connection_id:
+                return self._set_unknown(received_ms, "bound_client_disconnected")
+        if self._pending is not None:
+            self._pending.expected_connections.discard(connection_id)
+            self._pending.responded_connections.discard(connection_id)
+            self._pending.candidates.pop(connection_id, None)
+        return self._unchanged(EventDisposition.ACCEPTED, "client_disconnected")
 
     def foreground_changed(
         self,
@@ -270,14 +284,25 @@ class ContextAggregator:
         assert context is not None
         bound = context.browser
         if context.resolution != ContextResolution.RESOLVED or bound is None:
-            return self._unchanged(EventDisposition.REJECTED, "context_not_resolved")
+            # A transient empty/unfocused update can make the current browser
+            # context unknown. The next proactive event is an opportunity to
+            # recover, but it must be correlated to a fresh request before it
+            # can affect website policy.
+            return self._request_current_browser_snapshot(snapshot.received_ms)
         if snapshot.snapshot_request_id is not None:
             return self._unchanged(EventDisposition.REJECTED, "stale_snapshot_request")
         if snapshot.connection_id != bound.connection_id:
             return self._unchanged(EventDisposition.REJECTED, "unbound_connection")
         if snapshot.client_instance_id != bound.client_instance_id:
             return self._unchanged(EventDisposition.REJECTED, "client_mismatch")
-        if not snapshot.window_focused or not snapshot.domain:
+        if not snapshot.window_focused:
+            # The foreground monitor is authoritative for leaving a browser.
+            # The Lock-In prompt can take foreground while Chrome reports an
+            # unfocused window; that must not erase Continue consent.
+            return self._unchanged(
+                EventDisposition.IGNORED, "browser_window_not_foreground"
+            )
+        if not snapshot.domain:
             return self._set_unknown(
                 snapshot.received_ms, "proactive_snapshot_ambiguous"
             )
@@ -295,6 +320,54 @@ class ContextAggregator:
             "proactive_snapshot_applied",
             True,
             self._context,
+        )
+
+    def _request_current_browser_snapshot(self, received_ms: int) -> AggregationResult:
+        context = self._context
+        assert context is not None
+        browser_kind = context.application.browser_kind
+        assert browser_kind is not None
+        connections = tuple(
+            sorted(
+                connection_id
+                for connection_id, client in self._clients.items()
+                if client.browser_kind == browser_kind
+            )
+        )
+        if not connections:
+            return self._unchanged(
+                EventDisposition.REJECTED, "no_browser_clients_for_refresh"
+            )
+
+        request = SnapshotRequest(
+            request_id=(
+                f"snapshot-{self._foreground_epoch}-refresh-"
+                f"{self._context_revision + 1}-{received_ms}"
+            ),
+            foreground_epoch=self._foreground_epoch,
+            browser_kind=browser_kind,
+            target_connection_ids=connections,
+            deadline_ms=received_ms + self._snapshot_wait_ms,
+        )
+        self._pending = _PendingResolution(
+            request=request,
+            expected_connections=set(connections),
+            responded_connections=set(),
+            candidates={},
+        )
+        self._context_revision += 1
+        self._context = self._make_context(
+            received_ms=received_ms,
+            application=context.application,
+            resolution=ContextResolution.PENDING,
+            browser=None,
+        )
+        return AggregationResult(
+            EventDisposition.ACCEPTED,
+            "browser_snapshot_refresh_requested",
+            True,
+            self._context,
+            request,
         )
 
     def _finalize_pending(
@@ -373,7 +446,7 @@ class ContextAggregator:
             browser_kind=snapshot.browser_kind,
             window_id=snapshot.window_id,
             tab_id=snapshot.tab_id,
-            domain=snapshot.domain.lower().rstrip("."),
+            domain=normalize_domain(snapshot.domain),
             sequence=snapshot.sequence,
         )
 

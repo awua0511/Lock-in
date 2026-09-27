@@ -77,7 +77,9 @@ try {
         "lock-in-communication-tray.exe",
         "lock-in-communication-harness.exe",
         "lock-in-context-replay.exe",
-        "lock-in-register-native-host.exe"
+        "lock-in-register-native-host.exe",
+        "lock-in-production-native-host.exe",
+        "lock-in-register-production-native-host.exe"
     )
     foreach ($entryPoint in $expectedEntryPoints) {
         $entryPointPath = Join-Path $entryPointDirectory $entryPoint
@@ -87,6 +89,8 @@ try {
     }
 
     Get-ChildItem -LiteralPath "browser_extension\experiment3" -Filter "*.json" |
+        ForEach-Object { Get-Content -Raw -LiteralPath $_.FullName | ConvertFrom-Json | Out-Null }
+    Get-ChildItem -LiteralPath "browser_extension\production" -Filter "*.json" |
         ForEach-Object { Get-Content -Raw -LiteralPath $_.FullName | ConvertFrom-Json | Out-Null }
     Get-ChildItem -LiteralPath "scenarios" -Filter "*.json" |
         ForEach-Object { Get-Content -Raw -LiteralPath $_.FullName | ConvertFrom-Json | Out-Null }
@@ -99,6 +103,8 @@ try {
     Assert-LastExitCode "Service worker JavaScript syntax check"
     & $node.Source --check "browser_extension\experiment3\popup.js"
     Assert-LastExitCode "Popup JavaScript syntax check"
+    & $node.Source --check "browser_extension\production\service-worker.js"
+    Assert-LastExitCode "Production service worker JavaScript syntax check"
 
     if ($IncludeWindowsIntegration) {
         & (Join-Path $entryPointDirectory "lock-in-communication-harness.exe")

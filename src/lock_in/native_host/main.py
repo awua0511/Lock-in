@@ -11,8 +11,10 @@ import time
 import uuid
 from collections.abc import Sequence
 from multiprocessing.connection import Client, Connection
+from pathlib import Path
 from typing import Any, BinaryIO
 
+from lock_in.app.config import user_requested_exit
 from lock_in.communication.protocol import (
     MAX_MESSAGE_BYTES,
     ProtocolError,
@@ -21,7 +23,10 @@ from lock_in.communication.protocol import (
     parse_envelope,
     protocol_error_message,
 )
-from lock_in.platform.windows.local_identity import pipe_address
+from lock_in.platform.windows.local_identity import (
+    application_pipe_address,
+    pipe_address,
+)
 
 CONNECT_TIMEOUT_SECONDS = 8.0
 CONNECT_RETRY_SECONDS = 0.1
@@ -72,8 +77,12 @@ def _launch_tray(namespace: str) -> subprocess.Popen[bytes]:
     )
 
 
-def connect_or_launch(namespace: str) -> Connection:
-    address = pipe_address(namespace)
+def connect_or_launch(namespace: str, *, production: bool = False) -> Connection:
+    if production and user_requested_exit():
+        raise ConnectionError("Lock-In was explicitly closed by the user")
+    address = (
+        application_pipe_address(namespace) if production else pipe_address(namespace)
+    )
     deadline = time.monotonic() + CONNECT_TIMEOUT_SECONDS
     launch_process: subprocess.Popen[bytes] | None = None
     last_launch = 0.0
@@ -84,15 +93,46 @@ def connect_or_launch(namespace: str) -> Connection:
         except OSError as error:
             last_error = error
             now = time.monotonic()
+            if production and user_requested_exit():
+                raise ConnectionError(
+                    "Lock-In was explicitly closed by the user"
+                ) from error
             if launch_process is None or (
                 launch_process.poll() is not None and now - last_launch >= 0.25
             ):
-                launch_process = _launch_tray(namespace)
+                launch_process = (
+                    _launch_application(namespace)
+                    if production
+                    else _launch_tray(namespace)
+                )
                 last_launch = now
             time.sleep(CONNECT_RETRY_SECONDS)
     raise ConnectionError(
         "Could not connect to the Lock-In tray process"
     ) from last_error
+
+
+def _launch_application(namespace: str) -> subprocess.Popen[bytes]:
+    executable = Path(sys.executable).resolve().parent / "lock-in.exe"
+    command = (
+        [str(executable), "--instance-namespace", namespace]
+        if executable.is_file()
+        else [
+            sys.executable,
+            "-m",
+            "lock_in.app.main",
+            "--instance-namespace",
+            namespace,
+        ]
+    )
+    return subprocess.Popen(
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=CREATE_NO_WINDOW if os.name == "nt" else 0,
+        close_fds=True,
+    )
 
 
 class NativeRelay:
