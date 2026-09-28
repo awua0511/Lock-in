@@ -17,7 +17,7 @@ Lock-In targets interactive per-user desktop sessions. Remote Desktop, kiosk, se
 
 - Minimum source-development version: Python 3.12.
 - The automated baseline currently also runs on Python 3.14.
-- Production packages will bundle their runtime; end users should not need to install Python.
+- M7 test packages bundle their runtime; end users do not need to install Python.
 
 Dropping a Python version requires an architecture decision and a documented packaging reason.
 
@@ -51,3 +51,9 @@ Before release, manual testing must include:
 ## Degraded Behavior
 
 Unsupported, inaccessible, or ambiguous contexts must fail open. Lock-In may report component health, but it must not block input, close applications, or classify an unknown browser page as non-allowlisted.
+
+## M7 Actual Validation
+
+The current local candidate was built and smoke-tested on Windows 11 x64 (build 22621), with Python 3.14.3, PySide6 6.11.2 and PyInstaller 6.22.3. This observation does not certify that OS build's current support lifecycle. Windows 10, Windows ARM64 and a separate clean machine were not available for this acceptance run.
+
+100%, 150% and 200% offscreen Qt previews were rendered and inspected, including a narrow window. They are not physical mixed-monitor tests. Packaged protocol clients cover Chrome/Edge-style concurrent profiles, but real browser sessions, notification delivery, elevated targets and lock/sleep/resume still require the [M7 manual checklist](../MILESTONE_07.md). See [release validation](RELEASE_VALIDATION.md) for measured results and remaining gates.

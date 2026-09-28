@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import sys
@@ -21,6 +22,7 @@ from lock_in.app.config import (
     clear_user_requested_exit,
     log_directory,
     mark_user_requested_exit,
+    user_requested_exit,
 )
 from lock_in.app.configuration_service import ConfigurationService
 from lock_in.app.coordinator import ApplicationCoordinator
@@ -36,6 +38,7 @@ from lock_in.app.events import (
 from lock_in.app.focus_service import FocusApplicationService
 from lock_in.app.lifecycle import ApplicationLifecycle
 from lock_in.app.logging_setup import configure_application_logging, safe_log
+from lock_in.app.review_service import ReviewService
 from lock_in.context.application_service import BrowserContextApplicationService
 from lock_in.ipc.pipe_server import BrowserPipeServer
 from lock_in.monitoring.foreground_service import ForegroundMonitoringService
@@ -48,6 +51,7 @@ from lock_in.platform.windows.window_activation import WindowActivator
 from lock_in.rules.application_policy import ApplicationFocusPolicy
 from lock_in.storage.database import database_path
 from lock_in.storage.repositories import Repositories
+from lock_in.storage.reviews import ReviewRepository
 from lock_in.storage.worker import DatabaseWorker
 
 
@@ -59,6 +63,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--log-directory", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--data-directory", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--no-tray", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--host-launched", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--diagnostics-file", type=Path, help=argparse.SUPPRESS)
     parser.add_argument(
         "--smoke-test-duration", type=float, metavar="SECONDS", help=argparse.SUPPRESS
     )
@@ -74,8 +80,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("--smoke-test-duration must be greater than zero.", file=sys.stderr)
         return 2
 
-    clear_user_requested_exit()
-
     logger = configure_application_logging(args.log_directory or log_directory())
     mutex = SingleInstanceMutex(application_mutex_name(args.instance_namespace))
     if mutex.already_exists:
@@ -89,35 +93,53 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     try:
+        if args.host_launched and user_requested_exit():
+            return 0
+        if (
+            not args.host_launched
+            and args.instance_namespace == "default"
+            and args.data_directory is None
+        ):
+            clear_user_requested_exit()
         return _run_application(args, logger)
     finally:
         mutex.close()
 
 
 def _run_application(args: argparse.Namespace, logger: logging.Logger) -> int:
+    startup_started = time.monotonic()
     from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QApplication
 
     from lock_in.ui.bridge import QtUiBridge
     from lock_in.ui.shell import DesktopShell
+    from lock_in.ui.theme import apply_theme
 
     application = QApplication.instance() or QApplication(sys.argv[:1])
     application.setApplicationName(APPLICATION_NAME)
     application.setApplicationVersion(APPLICATION_VERSION)
     application.setOrganizationName(ORGANIZATION_NAME)
     application.setQuitOnLastWindowClosed(False)
+    apply_theme(application)
 
     bridge = QtUiBridge()
     database_worker = DatabaseWorker(
         database_path(args.data_directory or application_data_directory())
     )
     repositories = Repositories.create(database_worker)
+    reviews = ReviewService(
+        ReviewRepository(database_worker),
+        bridge,
+        logger,
+        lambda event: event_bus.publish(event),
+    )
     focus_service = FocusApplicationService(
         ApplicationFocusPolicy(),
         repositories.history,
         bridge,
         WindowActivator(),
         logger,
+        reviews=reviews,
     )
     configuration_service = ConfigurationService(
         repositories,
@@ -154,9 +176,16 @@ def _run_application(args: argparse.Namespace, logger: logging.Logger) -> int:
         configuration=configuration_service,
         focus=focus_service,
         browser_context=browser_context,
-        on_explicit_exit=mark_user_requested_exit,
+        on_explicit_exit=(
+            mark_user_requested_exit
+            if args.instance_namespace == "default" and args.data_directory is None
+            else None
+        ),
+        reviews=reviews,
     )
-    event_bus = SerializedEventBus(coordinator.handle, logger)
+    event_bus = SerializedEventBus(
+        coordinator.handle, logger, measure=args.diagnostics_file is not None
+    )
     monitor = ForegroundMonitoringService(
         lambda observation: event_bus.publish(
             ApplicationEvent(
@@ -169,8 +198,9 @@ def _run_application(args: argparse.Namespace, logger: logging.Logger) -> int:
     lifecycle = ApplicationLifecycle(
         (
             database_worker,
-            configuration_service,
             focus_service,
+            reviews,
+            configuration_service,
             monitor,
             pipe_server,
         ),
@@ -225,6 +255,12 @@ def _run_application(args: argparse.Namespace, logger: logging.Logger) -> int:
             PromptDecisionEvent(prompt_id, decision.value),
         ),
         tray_enabled=not args.no_tray,
+        on_request_review=lambda day: publish(
+            ApplicationEventKind.REQUEST_REVIEW, "reviews_ui", day
+        ),
+        on_notification_result=lambda result: publish(
+            ApplicationEventKind.REVIEW_NOTIFICATION_RESULT, "notification", result
+        ),
     )
     shutdown_lock = threading.Lock()
     shutdown_complete = False
@@ -235,9 +271,17 @@ def _run_application(args: argparse.Namespace, logger: logging.Logger) -> int:
             if shutdown_complete:
                 return
             shutdown_complete = True
-        lifecycle.stop(SHUTDOWN_TIMEOUT_SECONDS)
         event_bus.stop(SHUTDOWN_TIMEOUT_SECONDS)
+        lifecycle.stop(SHUTDOWN_TIMEOUT_SECONDS)
         shell.close()
+        if args.diagnostics_file is not None:
+            args.diagnostics_file.parent.mkdir(parents=True, exist_ok=True)
+            args.diagnostics_file.write_text(
+                json.dumps(
+                    {"startup_ms": startup_ms, **event_bus.measurements()}, indent=2
+                ),
+                encoding="utf-8",
+            )
         safe_log(logger, logging.INFO, "application_stopped", pid=os.getpid())
 
     application.aboutToQuit.connect(shutdown)
@@ -253,6 +297,7 @@ def _run_application(args: argparse.Namespace, logger: logging.Logger) -> int:
         )
     )
     safe_log(logger, logging.INFO, "application_started", pid=os.getpid())
+    startup_ms = (time.monotonic() - startup_started) * 1000
 
     interrupt_timer = QTimer()
     interrupt_timer.timeout.connect(lambda: None)

@@ -15,7 +15,11 @@ from lock_in.communication.protocol import (
     parse_envelope,
 )
 from lock_in.experiments.communication_tray import ClientSession, MessageRouter
-from lock_in.native_host.main import read_native_message, write_native_message
+from lock_in.native_host.main import (
+    NativeRelay,
+    read_native_message,
+    write_native_message,
+)
 
 
 def message(
@@ -140,3 +144,22 @@ def test_router_echoes_payload_without_business_logic() -> None:
     response = router.route(message("ping", 1, payload={"echo": "round-trip"}), session)
 
     assert response["payload"]["echo"] == "round-trip"
+
+
+@pytest.mark.parametrize("allow_test_commands", [False, True])
+def test_crash_injection_is_only_enabled_for_experiment_host(
+    monkeypatch, allow_test_commands
+):
+    from unittest.mock import Mock
+
+    connection = Mock()
+    crash = Mock()
+    monkeypatch.setattr("lock_in.native_host.main.os._exit", crash)
+    source = io.BytesIO()
+    write_native_message(source, encode_message(message("test_host_crash", 1)))
+    source.seek(0)
+    relay = NativeRelay(
+        connection, source, io.BytesIO(), allow_test_commands=allow_test_commands
+    )
+    relay._browser_to_pipe()
+    assert crash.call_count == int(allow_test_commands)

@@ -69,6 +69,25 @@ def test_synthetic_event_reaches_coordinator_on_dispatcher_thread(
     assert ui.calls[0][2] != caller_thread
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_optional_event_measurements_are_bounded_and_contain_no_payload(enabled):
+    bus = SerializedEventBus(
+        lambda _event: None, logging.getLogger("test.metrics"), measure=enabled
+    )
+    bus.start()
+    for _ in range(2200):
+        assert bus.publish(
+            ApplicationEvent(ApplicationEventKind.STARTED, "private-source")
+        )
+    assert bus.stop(3)
+    metrics = bus.measurements()
+    assert metrics["handled_events"] == (2200 if enabled else 0)
+    assert metrics["sample_count"] == (2048 if enabled else 0)
+    assert metrics["queue_latency_p95_ms"] >= 0
+    assert metrics["handler_max_ms"] >= 0
+    assert "private-source" not in str(metrics)
+
+
 def test_configuration_result_reenters_serialized_coordinator(tmp_path: Path) -> None:
     ui = FakeUi()
     focus = FakeFocus()
@@ -110,6 +129,20 @@ def test_explicit_exit_records_intent_before_requesting_quit() -> None:
     )
 
     assert calls == ["marker"]
+    assert ui.calls[0][0] == "quit"
+
+
+def test_exit_marker_write_failure_does_not_prevent_exit():
+    def fail_marker():
+        raise OSError("test marker permission denied")
+
+    ui = FakeUi()
+    coordinator = ApplicationCoordinator(
+        ui, logging.getLogger("test.exit-failure"), on_explicit_exit=fail_marker
+    )
+    coordinator.handle(
+        ApplicationEvent(ApplicationEventKind.SHUTDOWN_REQUESTED, "tray")
+    )
     assert ui.calls[0][0] == "quit"
 
 

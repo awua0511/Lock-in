@@ -9,6 +9,7 @@ description = "A local-first focus assistant for Windows"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "idna>=3.10,<4",
     "PySide6>=6.8,<7",
     "tzdata>=2025.2,<2027",
 ]
@@ -17,6 +18,10 @@ dependencies = [
 dev = [
     "pytest>=8,<10",
     "ruff>=0.13,<1",
+]
+build = [
+    "pyinstaller>=6.20,<7",
+    "psutil>=7.2,<8",
 ]
 
 [project.scripts]
@@ -38,6 +43,7 @@ where = ["src"]
 [tool.pytest.ini_options]
 addopts = "-q -p no:cacheprovider"
 testpaths = ["tests"]
+filterwarnings = ["error::pytest.PytestUnhandledThreadExceptionWarning"]
 
 [tool.ruff]
 target-version = "py312"

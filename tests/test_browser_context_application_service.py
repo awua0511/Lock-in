@@ -222,3 +222,25 @@ def test_unknown_proactive_context_requests_fresh_snapshot_for_recovery() -> Non
     assert service.current_context.resolution == ContextResolution.RESOLVED
     assert service.current_context.browser is not None
     assert service.current_context.browser.domain == "youtube.com"
+
+
+def test_connecting_profile_revalidates_without_replaying_old_foreground_time():
+    focus = FakeFocus()
+    sent = []
+    service = BrowserContextApplicationService(
+        focus, lambda _id, message: sent.append(message) or True
+    )
+    service.foreground_observed(_foreground(100), 100)
+    service.browser_event(
+        {
+            "event": "connected",
+            "connectionId": "late-connection",
+            "clientInstanceId": "profile",
+            "browser": "chrome",
+        },
+        60000,
+    )
+    assert len(focus.foregrounds) == 1
+    assert service.current_context.received_monotonic_ms == 60000
+    assert focus.contexts[-1][1]["monotonic_ms"] == 60000
+    assert sent[-1]["type"] == "request_snapshot"

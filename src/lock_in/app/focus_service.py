@@ -16,7 +16,6 @@ from lock_in.domain.models import (
     AttentionDecision,
     AttentionEvent,
     FocusSession,
-    TargetType,
 )
 from lock_in.platform.windows.foreground_monitor import (
     ForegroundObservation,
@@ -62,6 +61,7 @@ class FocusApplicationService:
         logger: logging.Logger,
         *,
         clock: Callable[[], datetime] | None = None,
+        reviews=None,
     ) -> None:
         self._policy = policy
         self._history = history
@@ -74,9 +74,12 @@ class FocusApplicationService:
         self._writes_lock = threading.Lock()
         self._capture_next_application = False
         self._timer = ContinuedUseTimer()
+        self._reviews = reviews
+        self._own_foreground = False
+        self._available = True
 
     def start(self) -> None:
-        return
+        self._history.close_interrupted_sessions().result(timeout=3)
 
     def stop(self, timeout: float) -> None:
         now = self._clock()
@@ -87,7 +90,7 @@ class FocusApplicationService:
                         id=session.id,
                         schedule_id=session.schedule_id,
                         started_at=session.started_at,
-                        ended_at=now,
+                        ended_at=max(now, session.started_at),
                     )
                 ),
                 "close_focus_session",
@@ -106,6 +109,8 @@ class FocusApplicationService:
                 continue
 
     def update_focus_configuration(self, configuration: FocusConfiguration) -> None:
+        if self._reviews is not None:
+            self._reviews.update_focus_configuration(configuration)
         configured_ids = {schedule.id for schedule in configuration.schedules}
         now = self._clock()
         for schedule_id, session in tuple(self._sessions.items()):
@@ -117,7 +122,7 @@ class FocusApplicationService:
                         id=session.id,
                         schedule_id=None,
                         started_at=session.started_at,
-                        ended_at=now,
+                        ended_at=max(now, session.started_at),
                     )
                 ),
                 "close_deleted_schedule_session",
@@ -125,9 +130,28 @@ class FocusApplicationService:
             del self._sessions[schedule_id]
         self._policy.update_configuration(configuration)
         self._timer.set_threshold(configuration.settings.follow_up_seconds)
-        self._timer.cancel()
+        update = self._policy.refresh(now)
+        if update.active_schedules is not None:
+            self._sync_sessions(update.active_schedules, now)
+        if update.dismiss_prompt:
+            self._ui.dismiss_attention_prompt()
+        if update.prompt is not None:
+            self._ui.show_attention_prompt(update.prompt)
+        if self._policy.continued_key is None:
+            self._timer.cancel()
 
     def observe_foreground(self, observation: ForegroundObservation) -> None:
+        if self._reviews is not None:
+            self._reviews.observe_foreground(observation)
+        if not self._available:
+            return
+        if self._policy.is_own_observation(observation):
+            self._own_foreground = True
+            self._timer.suspend(observation.monotonic_ms)
+            return
+        if self._own_foreground:
+            self._own_foreground = False
+            self._timer.resume()
         now = self._clock()
         update = self._policy.observe(observation, now)
         if not self._policy.is_own_observation(observation):
@@ -141,7 +165,12 @@ class FocusApplicationService:
                     observation.hwnd,
                     normalize_windows_path(observation.executable_path),
                 )
-            self._timer.observe(timing_key, observation.monotonic_ms)
+            if observation.executable_path and observation.executable_path.replace(
+                "/", "\\"
+            ).rsplit("\\", 1)[-1].lower() in {"chrome.exe", "msedge.exe"}:
+                self._timer.suspend(observation.monotonic_ms)
+            else:
+                self._timer.observe(timing_key, observation.monotonic_ms)
             if self._policy.continued_key is None:
                 self._timer.cancel()
         if update.active_schedules is not None:
@@ -172,7 +201,10 @@ class FocusApplicationService:
         if result is None:
             return
         # Activate while the decision dialog still owns foreground permission.
-        activated = self._activator.activate(result.activate_hwnd)
+        try:
+            activated = self._activator.activate(result.activate_hwnd)
+        except Exception:
+            activated = False
         if result.activate_hwnd is not None and not activated:
             safe_log(
                 self._logger,
@@ -183,16 +215,13 @@ class FocusApplicationService:
             )
         self._ui.dismiss_attention_prompt()
         if decision is PolicyDecision.CONTINUE:
-            if result.prompt.target_type is TargetType.APPLICATION:
-                self._timer.arm(
-                    (
-                        result.prompt.target_hwnd,
-                        result.prompt.target_key
-                        or normalize_windows_path(result.prompt.executable_path),
-                    )
+            self._timer.arm(
+                (
+                    result.prompt.target_hwnd,
+                    result.prompt.target_key
+                    or normalize_windows_path(result.prompt.executable_path),
                 )
-            else:
-                self._timer.cancel()
+            )
         else:
             self._timer.cancel()
         recorded = (
@@ -210,7 +239,15 @@ class FocusApplicationService:
         pid: int,
         executable_path: str,
         browser_name: str,
+        monotonic_ms: int | None = None,
     ) -> None:
+        if not self._available or self._own_foreground:
+            return
+        monotonic_ms = (
+            time.monotonic_ns() // 1_000_000 if monotonic_ms is None else monotonic_ms
+        )
+        if self._reviews is not None:
+            self._reviews.observe_website_context(context, hwnd)
         if (
             context is None
             or context.resolution is not ContextResolution.RESOLVED
@@ -224,6 +261,13 @@ class FocusApplicationService:
                 preserve_continued=preserve_continued
             ):
                 self._ui.dismiss_attention_prompt()
+            if self._timer.target_key is not None:
+                if preserve_continued:
+                    self._timer.suspend(monotonic_ms)
+                elif self._timer.target_key[1] != normalize_windows_path(
+                    executable_path or "unknown"
+                ):
+                    self._timer.cancel()
             return
         update = self._policy.observe_website(
             context_id=context.context_id,
@@ -237,6 +281,11 @@ class FocusApplicationService:
             now=self._clock(),
         )
         now = self._clock()
+        if self._policy.continued_key is None:
+            self._timer.cancel()
+        else:
+            self._timer.resume()
+            self._timer.observe((hwnd, context.browser.domain), monotonic_ms)
         if update.active_schedules is not None:
             self._sync_sessions(update.active_schedules, now)
         if update.dismiss_prompt:
@@ -246,11 +295,15 @@ class FocusApplicationService:
             self._ui.show_attention_prompt(update.prompt)
 
     def tick(self, now: datetime, monotonic_ms: int) -> None:
+        if not self._available:
+            return
         update = self._policy.refresh(now)
         if update.active_schedules is not None:
             self._sync_sessions(update.active_schedules, now)
         if update.dismiss_prompt:
             self._ui.dismiss_attention_prompt()
+        if update.prompt is not None:
+            self._ui.show_attention_prompt(update.prompt)
         if self._policy.continued_key is None:
             self._timer.cancel()
             return
@@ -265,6 +318,9 @@ class FocusApplicationService:
         self._ui.show_attention_prompt(prompt)
 
     def system_availability_changed(self, available: bool, monotonic_ms: int) -> None:
+        self._available = available
+        if self._reviews is not None:
+            self._reviews.availability(available, monotonic_ms)
         if available:
             self._timer.resume()
             return
@@ -283,7 +339,7 @@ class FocusApplicationService:
                         id=session.id,
                         schedule_id=session.schedule_id,
                         started_at=session.started_at,
-                        ended_at=now,
+                        ended_at=max(now, session.started_at),
                     )
                 ),
                 "close_focus_session",
@@ -324,6 +380,7 @@ class FocusApplicationService:
                     or normalize_windows_path(prompt.executable_path),
                     decision=decision,
                     foreground_seconds=prompt.foreground_seconds,
+                    prompt_kind="follow_up" if prompt.foreground_seconds else "entry",
                 )
             ),
             "save_attention_event",

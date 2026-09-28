@@ -10,3 +10,5 @@ Architecture Decision Records (ADRs) preserve decisions that constrain multiple 
 | [0004](0004-single-sqlite-writer.md) | Accepted in Milestone 2 | One serialized SQLite owner with atomic migrations and typed repositories. |
 | [0005](0005-application-focus-loop.md) | Accepted in Milestone 3 | Pure application entry policy with advisory Qt prompts. |
 | [0006](0006-monotonic-foreground-timing.md) | Accepted in Milestone 4 | Monotonic, foreground-only continued-use timing. |
+| [0007](0007-local-daily-reviews.md) | Implemented; pending M6 acceptance | Independent usage checkpoints, stable local dates, and at-most-once daily notification attempts. |
+| [0008](0008-recoverable-per-user-distribution.md) | Implemented; pending M7 acceptance | Validated per-user bundles, recoverable activation and presentation-only UI changes. |

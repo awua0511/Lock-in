@@ -18,6 +18,9 @@ EXPECTED_TABLES = {
     "schedules",
     "schema_migrations",
     "website_allowlist",
+    "review_usage",
+    "review_deliveries",
+    "review_state",
 }
 
 
@@ -44,7 +47,7 @@ def test_empty_profile_migrates_to_current_schema(tmp_path: Path) -> None:
         versions = connection.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
         ).fetchall()
-        assert [row[0] for row in versions] == [1, 2]
+        assert [row[0] for row in versions] == [1, 2, 3]
         assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
     finally:
@@ -53,6 +56,7 @@ def test_empty_profile_migrates_to_current_schema(tmp_path: Path) -> None:
     assert inspection["migrations"] == [
         {"version": 1, "name": "configuration"},
         {"version": 2, "name": "history"},
+        {"version": 3, "name": "daily_reviews"},
     ]
     assert set(inspection["tables"]) == EXPECTED_TABLES
     counted = inspect_database(path, include_counts=True)
@@ -64,15 +68,14 @@ def test_empty_profile_migrates_to_current_schema(tmp_path: Path) -> None:
     }
 
 
-@pytest.mark.parametrize("failed_version", [1, 2])
+@pytest.mark.parametrize("failed_version", [1, 2, 3])
 def test_each_migration_rolls_back_and_can_resume(
     tmp_path: Path, failed_version: int
 ) -> None:
     path = tmp_path / f"interrupted-{failed_version}.sqlite3"
     connection = _connect(path)
     try:
-        if failed_version == 2:
-            run_migrations(connection, MIGRATIONS[:1])
+        run_migrations(connection, MIGRATIONS[: failed_version - 1])
         original = MIGRATIONS[failed_version - 1]
         failed = Migration(
             version=original.version,
@@ -87,10 +90,17 @@ def test_each_migration_rolls_back_and_can_resume(
         applied = connection.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
         ).fetchall()
-        expected_applied = [(1,)] if failed_version == 2 else []
+        expected_applied = [(version,) for version in range(1, failed_version)]
         assert applied == expected_applied
-        failed_table = "focus_sessions" if failed_version == 2 else "schedules"
+        failed_table = {1: "schedules", 2: "focus_sessions", 3: "review_usage"}[
+            failed_version
+        ]
         assert failed_table not in _tables(connection)
+        if failed_version == 3:
+            assert "local_day" not in {
+                row[1]
+                for row in connection.execute("PRAGMA table_info(attention_events)")
+            }
     finally:
         connection.close()
 
@@ -102,16 +112,13 @@ def test_each_migration_rolls_back_and_can_resume(
         recovered.close()
 
 
-@pytest.mark.parametrize("interrupted_version", [1, 2])
+@pytest.mark.parametrize("interrupted_version", [1, 2, 3])
 def test_each_uncommitted_migration_recovers_after_reconnect(
     tmp_path: Path, interrupted_version: int
 ) -> None:
     path = tmp_path / f"crash-{interrupted_version}.sqlite3"
     connection = _connect(path)
-    if interrupted_version == 2:
-        run_migrations(connection, MIGRATIONS[:1])
-    else:
-        run_migrations(connection, ())
+    run_migrations(connection, MIGRATIONS[: interrupted_version - 1])
     connection.execute("BEGIN IMMEDIATE")
     connection.execute(MIGRATIONS[interrupted_version - 1].statements[0])
     connection.close()
@@ -122,7 +129,7 @@ def test_each_uncommitted_migration_recovers_after_reconnect(
         assert _tables(recovered) == EXPECTED_TABLES
         assert recovered.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
-        ).fetchall() == [(1,), (2,)]
+        ).fetchall() == [(1,), (2,), (3,)]
     finally:
         recovered.close()
 
@@ -156,3 +163,16 @@ def test_existing_profile_is_backed_up_before_upgrade(tmp_path: Path) -> None:
         assert "focus_sessions" not in _tables(backup)
     finally:
         backup.close()
+
+
+def test_database_connection_is_closed_if_initial_pragmas_fail(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+
+    connection = Mock()
+    connection.execute.side_effect = sqlite3.DatabaseError("unreadable database")
+    monkeypatch.setattr(
+        "lock_in.storage.database.sqlite3.connect", lambda *a, **k: connection
+    )
+    with pytest.raises(sqlite3.DatabaseError):
+        open_database(tmp_path / "bad.sqlite3")
+    connection.close.assert_called_once()

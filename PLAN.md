@@ -4,7 +4,7 @@ This plan begins after the four risk-validation experiments. Its goal is to turn
 
 ## Current Gate
 
-Milestones 0–4 were accepted by 2026-09-23. Milestone 5 implementation is ready for automated and manual acceptance; no commit or push will be made by Codex.
+Milestones 0–6 have progressed to M7 at the user's request. M7 implementation and local automated verification are ready for final user acceptance. Windows 10, real mixed-monitor sessions, signing/store publication and broader release checks remain explicit manual/external gates. No commit or push will be made by Codex. See [M7 acceptance](MILESTONE_07.md) and [validation evidence](docs/RELEASE_VALIDATION.md).
 
 ## Delivery Strategy
 
@@ -167,6 +167,7 @@ app_settings
 - Connect WinEvent and browser events to the Experiment 4 `ContextAggregator` through the unified queue.
 - Maintain connection health for Chrome, Edge, and each browser profile.
 - Implement normalized hostname matching with explicit subdomain behavior.
+- Website prompts offer only Continue; there is no website Return action.
 - Add a non-blocking component-health notice for missing or incompatible extensions.
 
 ### Acceptance criteria
@@ -182,7 +183,7 @@ app_settings
 
 ### Work
 
-- Aggregate daily scheduled time, entry counts, decisions, and non-allowlisted foreground time.
+- Aggregate daily recorded schedule time (observed while running, with overlapping schedules counted once), entry-prompt counts, decisions, and non-allowlisted foreground time.
 - Add an objective review view with event details.
 - Schedule one local Windows notification at the configured review time.
 - Add a single catch-up notification after sleep or shutdown when appropriate.
@@ -192,20 +193,22 @@ app_settings
 
 - Aggregates can be reproduced from stored events in deterministic tests.
 - A review is sent at most once per local day.
+- A catch-up consumes the current day's notification slot; other missed reviews remain available in the review view.
 - Time-zone changes do not duplicate or silently skip a review without a recorded reason.
 - Review wording contains no reward, punishment, streak, or moral judgment.
 - Retention cleanup never deletes current settings or allowlists.
 
-## Milestone 7: Hardening and Distribution
+## Milestone 7: Hardening, Distribution and UI
 
 ### Work
 
 - Measure idle CPU, working-set memory, startup time, and event latency.
 - Test Windows 10/11, multi-monitor DPI combinations, lock/sleep/resume, and elevated targets.
-- Package the tray client and Native Host with PyInstaller or Nuitka.
+- Package the tray client and Native Host with PyInstaller, using a shared onedir runtime and isolated dependency search paths.
 - Install and remove browser manifests cleanly per user.
 - Test upgrade, rollback, partial installation, corrupted settings, and migration failure.
 - Evaluate code signing, SmartScreen reputation, and extension-store publication.
+- Refine the desktop UI with sidebar navigation, an overview, review metric cards, consistent prompts, visible failures, keyboard access and small-window scrolling.
 
 ### Acceptance criteria
 
@@ -214,6 +217,8 @@ app_settings
 - The packaged build passes the same behavioral and integration suites as source execution.
 - Monitoring remains effectively idle when foreground state does not change.
 - Known degraded states are visible and never turn into forced blocking.
+- Website prompts retain only Continue; Continue/X/Escape behavior is regression-tested after styling changes.
+- User acceptance and unavailable hardware/external checks are recorded separately from automated passes.
 
 ## Testing Strategy
 

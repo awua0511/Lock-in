@@ -10,6 +10,7 @@ from collections.abc import Callable
 from PySide6.QtCore import QAbstractNativeEventFilter, QCoreApplication
 
 WM_QUERYENDSESSION = 0x0011
+WM_ENDSESSION = 0x0016
 WM_POWERBROADCAST = 0x0218
 WM_WTSSESSION_CHANGE = 0x02B1
 PBT_APMSUSPEND = 0x0004
@@ -20,6 +21,41 @@ WTS_SESSION_UNLOCK = 0x0008
 NOTIFY_FOR_THIS_SESSION = 0
 
 AvailabilitySink = Callable[[bool, str, int], None]
+
+
+class SystemAvailability:
+    """Sleep and session lock are independent; waking need not unlock Windows."""
+
+    def __init__(self) -> None:
+        self.locked = False
+        self.suspended = False
+        self.ending = False
+        self.available = True
+
+    def consume(self, message: int, wparam: int) -> tuple[bool, str] | None:
+        decoded = decode_system_message(message, wparam)
+        if message == WM_ENDSESSION:
+            self.ending = bool(wparam)
+            reason = "system_shutdown" if wparam else "shutdown_cancelled"
+        elif decoded is None:
+            return None
+        else:
+            _, reason = decoded
+            if reason == "session_lock":
+                self.locked = True
+            elif reason == "session_unlock":
+                self.locked = False
+            elif reason == "system_suspend":
+                self.suspended = True
+            elif reason == "system_resume":
+                self.suspended = False
+            elif reason == "system_shutdown":
+                self.ending = True
+        available = not (self.locked or self.suspended or self.ending)
+        if available == self.available:
+            return None
+        self.available = available
+        return available, reason
 
 
 def decode_system_message(message: int, wparam: int) -> tuple[bool, str] | None:
@@ -46,7 +82,7 @@ class WindowsSystemEventFilter(QAbstractNativeEventFilter):
         self._window_handle = window_handle
         self._sink = sink
         self._registered = False
-        self._available = True
+        self._availability = SystemAvailability()
         if os.name == "nt":
             from ctypes import wintypes
 
@@ -63,13 +99,11 @@ class WindowsSystemEventFilter(QAbstractNativeEventFilter):
         from ctypes import wintypes
 
         native = ctypes.cast(int(message), ctypes.POINTER(wintypes.MSG)).contents
-        decoded = decode_system_message(int(native.message), int(native.wParam))
+        decoded = self._availability.consume(int(native.message), int(native.wParam))
         if decoded is None:
             return False, 0
         available, reason = decoded
-        if available != self._available:
-            self._available = available
-            self._sink(available, reason, time.monotonic_ns() // 1_000_000)
+        self._sink(available, reason, time.monotonic_ns() // 1_000_000)
         return False, 0
 
     def close(self) -> None:

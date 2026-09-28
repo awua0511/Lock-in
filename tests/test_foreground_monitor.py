@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -137,3 +139,16 @@ def test_json_output_has_stable_status_value() -> None:
 
     assert payload["status"] == "identified"
     assert payload["application_name"] == "Example"
+
+
+def test_foreground_hook_includes_own_windows_for_accurate_timing():
+    from lock_in.platform.windows.foreground_monitor import (
+        WINEVENT_SKIPOWNPROCESS,
+        Win32Api,
+    )
+
+    api = Win32Api.__new__(Win32Api)
+    install = Mock(return_value=123)
+    api._user32 = SimpleNamespace(SetWinEventHook=install)
+    api.install_foreground_hook(None)
+    assert install.call_args.args[-1] & WINEVENT_SKIPOWNPROCESS == 0

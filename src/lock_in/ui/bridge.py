@@ -16,6 +16,14 @@ class QtUiBridge(QObject):
     dismiss_attention_prompt_signal = Signal()
     operation_error_signal = Signal(str)
     browser_health_signal = Signal(str)
+    review_signal = Signal(object)
+    review_notification_signal = Signal(object)
+
+    def update_review(self, review: object) -> None:
+        self.review_signal.emit(review)
+
+    def show_review_notification(self, review: object) -> None:
+        self.review_notification_signal.emit(review)
 
     def show_main_window(self) -> None:
         self.show_main_window_signal.emit()

@@ -6,9 +6,11 @@ Milestone 5 connects Chrome and Edge browser context to Lock-In's existing focus
 
 - Production MV3 extension, Native Messaging relay, per-user Named Pipe server, and browser registration commands are separate from Experiment 3.
 - The tray process requests a fresh browser snapshot for every foreground epoch. A snapshot must echo both its request ID and epoch before it can be used.
+- Changed unsolicited snapshots trigger revalidation; they cannot directly replace the currently bound domain. Extension sampling generations discard older asynchronous reads.
 - Browser/Windows correlation is serialized through the application event queue and `ContextAggregator`.
 - Browser profile connections are visible in the Overview health line. Disconnecting the currently bound profile invalidates its context.
 - Website rules compare normalized hostnames, with an explicit option to include subdomains.
+- Website prompts provide only **Continue anyway**. They do not offer a Return action because Lock-In cannot reliably restore the previously active browser tab/window from a website prompt.
 - Unknown, malformed, stale, late, duplicate, or ambiguous website context fails open and does not trigger a website prompt.
 - If a transient browser update makes the active context unknown, the next proactive event requests a fresh correlated snapshot; it does not reuse the old domain or remain stuck unknown indefinitely.
 
@@ -52,9 +54,9 @@ These checks require a Windows 10/11 machine, unpacked Chrome and Edge extension
 ### 4. Verify prompt decisions
 
 1. Open a normal allowed application, then switch to Chrome during an active schedule and visit an unallowed site.
-2. Choose **Continue anyway**. The prompt should close after the decision is processed and should not immediately return for that same site.
-3. Choose **Return to previous window** on another unallowed site. Lock-In should reactivate the non-browser window that was foreground before Chrome.
-4. Open a different unallowed domain; it should produce a new prompt. Returning to the previously continued domain later should prompt again after genuinely leaving the browser.
+2. Confirm the website prompt shows **Continue anyway** and has no **Return to previous window** button.
+3. Choose **Continue anyway**. The prompt should close after the decision is processed and should not immediately return for that same website context.
+4. Open a different unallowed domain; it should produce a new prompt. Returning to the previously continued domain later should prompt again after genuinely leaving that website context.
 
 ## Acceptance Boundary
 

@@ -88,6 +88,8 @@ class ContinuedUseTimer:
         return segment
 
     def resume(self) -> None:
+        if not self._suspended:
+            return
         self._suspended = False
         self._segment_started_ms = None
 

@@ -351,6 +351,17 @@ class HistoryRepository:
     def __init__(self, worker: DatabaseWorker) -> None:
         self._worker = worker
 
+    def close_interrupted_sessions(self) -> Future[int]:
+        # On startup no session belongs to this process yet. Mark old open
+        # sessions closed without inventing crash-time duration.
+        return self._worker.submit(
+            lambda connection: (
+                connection.execute(
+                    "UPDATE focus_sessions SET ended_at = started_at WHERE ended_at IS NULL"
+                ).rowcount
+            )
+        )
+
     def save_session(self, session: FocusSession) -> Future[FocusSession]:
         def operation(connection: sqlite3.Connection) -> FocusSession:
             with _transaction(connection):
@@ -384,15 +395,19 @@ class HistoryRepository:
                     """
                     INSERT INTO attention_events(
                         id, focus_session_id, occurred_at, target_type,
-                        target_key, decision, foreground_seconds
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        target_key, decision, foreground_seconds,
+                        local_day, local_occurred_at, prompt_kind
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         focus_session_id = excluded.focus_session_id,
                         occurred_at = excluded.occurred_at,
                         target_type = excluded.target_type,
                         target_key = excluded.target_key,
                         decision = excluded.decision,
-                        foreground_seconds = excluded.foreground_seconds
+                        foreground_seconds = excluded.foreground_seconds,
+                        local_day = excluded.local_day,
+                        local_occurred_at = excluded.local_occurred_at,
+                        prompt_kind = excluded.prompt_kind
                     """,
                     (
                         event.id,
@@ -402,6 +417,9 @@ class HistoryRepository:
                         event.target_key,
                         event.decision.value,
                         event.foreground_seconds,
+                        event.occurred_at.date().isoformat(),
+                        event.occurred_at.isoformat(),
+                        event.prompt_kind,
                     ),
                 )
             return event
@@ -441,6 +459,7 @@ class HistoryRepository:
                     target_key=row["target_key"],
                     decision=AttentionDecision(row["decision"]),
                     foreground_seconds=row["foreground_seconds"],
+                    prompt_kind=row["prompt_kind"],
                 )
                 for row in rows
             )
@@ -452,6 +471,7 @@ class HistoryRepository:
             with _transaction(connection):
                 events = connection.execute("DELETE FROM attention_events").rowcount
                 sessions = connection.execute("DELETE FROM focus_sessions").rowcount
+                connection.execute("DELETE FROM review_usage")
             return HistoryClearResult(events, sessions)
 
         return self._worker.submit(operation)

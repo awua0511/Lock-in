@@ -21,13 +21,13 @@ function Assert-LastExitCode {
 
 Push-Location $projectRoot
 try {
-    & $python -m ruff format --check src tests
+    & $python -m ruff format --check src tests scripts packaging
     Assert-LastExitCode "Ruff format check"
 
-    & $python -m ruff check src tests
+    & $python -m ruff check src tests scripts packaging
     Assert-LastExitCode "Ruff lint check"
 
-    & $python -m compileall -q src tests
+    & $python -m compileall -q src tests scripts packaging
     Assert-LastExitCode "Python compile check"
 
     & $python -m pytest
@@ -50,7 +50,7 @@ try {
 
     $missingLinks = @()
     Get-ChildItem -LiteralPath $projectRoot -Recurse -Filter "*.md" |
-        Where-Object { $_.FullName -notlike "$projectRoot\.venv\*" } |
+        Where-Object { $_.FullName -notlike "$projectRoot\.venv\*" -and $_.FullName -notlike "$projectRoot\build\*" -and $_.FullName -notlike "$projectRoot\dist\*" } |
         ForEach-Object {
             $markdownFile = $_
             $content = Get-Content -Raw -LiteralPath $markdownFile.FullName
@@ -105,6 +105,8 @@ try {
     Assert-LastExitCode "Popup JavaScript syntax check"
     & $node.Source --check "browser_extension\production\service-worker.js"
     Assert-LastExitCode "Production service worker JavaScript syntax check"
+    & $node.Source --test "tests\browser_snapshot.test.cjs"
+    Assert-LastExitCode "Browser snapshot race regression tests"
 
     if ($IncludeWindowsIntegration) {
         & (Join-Path $entryPointDirectory "lock-in-communication-harness.exe")

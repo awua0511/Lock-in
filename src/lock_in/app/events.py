@@ -27,6 +27,9 @@ class ApplicationEventKind(StrEnum):
     SYSTEM_AVAILABILITY_CHANGED = "system_availability_changed"
     BROWSER_IPC_EVENT = "browser_ipc_event"
     CONFIGURATION_LOADED = "configuration_loaded"
+    REQUEST_REVIEW = "request_review"
+    REVIEW_COMPLETED = "review_completed"
+    REVIEW_NOTIFICATION_RESULT = "review_notification_result"
 
 
 @dataclass(frozen=True, slots=True)

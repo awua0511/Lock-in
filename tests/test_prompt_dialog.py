@@ -5,6 +5,8 @@ from dataclasses import replace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QPushButton
 
 from lock_in.domain.models import TargetType
@@ -80,3 +82,17 @@ def test_website_prompt_does_not_offer_unavailable_return_action() -> None:
     assert [button.text() for button in dialog.findChildren(QPushButton)] == [
         "Continue anyway"
     ]
+
+
+def test_escape_submits_continue_and_waits_for_ack():
+    _ = QApplication.instance() or QApplication([])
+    decisions = []
+    dialog = AttentionPromptDialog(
+        _prompt(), lambda _id, decision: decisions.append(decision)
+    )
+    dialog.show()
+    QTest.keyClick(dialog, Qt.Key.Key_Escape)
+    assert decisions == [PolicyDecision.CONTINUE]
+    assert dialog.isVisible()
+    dialog.dismiss_stale()
+    assert not dialog.isVisible()

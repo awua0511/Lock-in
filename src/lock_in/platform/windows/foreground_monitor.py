@@ -405,7 +405,7 @@ class Win32Api:
             callback_pointer,
             0,
             0,
-            WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+            WINEVENT_OUTOFCONTEXT,
         )
         if not hook:
             error_code = ctypes.get_last_error()

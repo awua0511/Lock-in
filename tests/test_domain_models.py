@@ -85,3 +85,12 @@ def test_one_time_recurrence_accepts_a_calendar_date() -> None:
         occurrence_date=date(2026, 9, 18),
     )
     assert recurrence.weekday is None
+
+
+def test_international_and_ipv6_hosts_match_browser_hostname_format():
+    assert WebsiteAllowlistEntry("例子.测试").domain == "xn--fsqu00a.xn--0zwm56d"
+    assert WebsiteAllowlistEntry("faß.de").domain == "xn--fa-hia.de"
+    assert WebsiteAllowlistEntry("ＧＩＴＨＵＢ。ＣＯＭ。").domain == "github.com"
+    assert WebsiteAllowlistEntry("[::1]").domain == "::1"
+    with pytest.raises(ValueError):
+        WebsiteAllowlistEntry("[[::1]]")

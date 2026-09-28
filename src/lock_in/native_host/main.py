@@ -114,8 +114,10 @@ def connect_or_launch(namespace: str, *, production: bool = False) -> Connection
 
 def _launch_application(namespace: str) -> subprocess.Popen[bytes]:
     executable = Path(sys.executable).resolve().parent / "lock-in.exe"
+    if getattr(sys, "frozen", False) and not executable.is_file():
+        raise FileNotFoundError("Packaged desktop executable is missing")
     command = (
-        [str(executable), "--instance-namespace", namespace]
+        [str(executable), "--instance-namespace", namespace, "--host-launched"]
         if executable.is_file()
         else [
             sys.executable,
@@ -123,6 +125,7 @@ def _launch_application(namespace: str) -> subprocess.Popen[bytes]:
             "lock_in.app.main",
             "--instance-namespace",
             namespace,
+            "--host-launched",
         ]
     )
     return subprocess.Popen(
@@ -141,6 +144,8 @@ class NativeRelay:
         connection: Connection,
         input_stream: BinaryIO,
         output_stream: BinaryIO,
+        *,
+        allow_test_commands: bool = False,
     ) -> None:
         self._connection = connection
         self._input = input_stream
@@ -148,6 +153,7 @@ class NativeRelay:
         self._connection_id = str(uuid.uuid4())
         self._stop = threading.Event()
         self._output_lock = threading.Lock()
+        self._allow_test_commands = allow_test_commands
 
     def run(self) -> int:
         input_thread = threading.Thread(
@@ -184,7 +190,10 @@ class NativeRelay:
                     self._write_error(error, message)
                     continue
                 message["connectionId"] = self._connection_id
-                if message.get("type") == "test_host_crash":
+                if (
+                    self._allow_test_commands
+                    and message.get("type") == "test_host_crash"
+                ):
                     os._exit(70)
                 self._connection.send_bytes(encode_message(message))
         except (EOFError, OSError, ProtocolError) as error:
@@ -247,7 +256,9 @@ def main(_argv: Sequence[str] | None = None) -> int:
         except OSError:
             pass
         return 1
-    return NativeRelay(connection, sys.stdin.buffer, sys.stdout.buffer).run()
+    return NativeRelay(
+        connection, sys.stdin.buffer, sys.stdout.buffer, allow_test_commands=True
+    ).run()
 
 
 if __name__ == "__main__":

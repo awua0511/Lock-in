@@ -6,7 +6,7 @@ import ntpath
 import os
 import uuid
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -169,6 +169,7 @@ class ApplicationFocusPolicy:
         self._last_non_browser_window_hwnd: int | None = None
         self._prompt: AttentionPrompt | None = None
         self._continued_prompt: AttentionPrompt | None = None
+        self._website_current_key: tuple[int, str] | None = None
 
     @property
     def active_prompt(self) -> AttentionPrompt | None:
@@ -209,6 +210,7 @@ class ApplicationFocusPolicy:
             return PolicyUpdate()
         self._current_key = key
         if executable_name(path) not in {"chrome.exe", "msedge.exe"}:
+            self._website_current_key = None
             self._last_non_browser_window_hwnd = observation.hwnd
 
         if self._continued_key is not None and key != self._continued_key:
@@ -296,6 +298,7 @@ class ApplicationFocusPolicy:
             return PolicyUpdate()
         self._website_marker = marker
         key = (hwnd, normalized)
+        self._website_current_key = key
         if self._continued_key is not None and self._continued_key != key:
             self._continued_key = None
             self._continued_prompt = None
@@ -372,26 +375,36 @@ class ApplicationFocusPolicy:
             self._continued_key = None
             self._continued_prompt = None
         self._website_marker = None
+        self._website_current_key = None
         return dismiss
 
     def refresh(self, now: datetime) -> PolicyUpdate:
         """Re-evaluate schedule boundaries without inventing a foreground entry."""
         active = active_schedules_at(self._configuration.schedules, now)
-        continued_path = self._continued_key[1] if self._continued_key else None
         if active:
-            became_allowed = continued_path is not None and (
-                self._is_system_path(continued_path)
-                or self._is_allowed(continued_path, active)
+            dismiss = self._prompt is not None and self._prompt_allowed(
+                self._prompt, active
             )
-            if not became_allowed:
-                return PolicyUpdate(active_schedules=active)
-            dismiss = self._prompt is not None
-            self._prompt = None
-            self._continued_key = None
-            self._continued_prompt = None
+            if dismiss:
+                self._prompt = None
+            if self._continued_prompt is not None and self._prompt_allowed(
+                self._continued_prompt, active
+            ):
+                self._continued_key = None
+                self._continued_prompt = None
+            updated = None
+            if self._prompt is not None and (
+                self._prompt.schedule_ids != tuple(s.id for s in active)
+                or self._prompt.schedule_names != tuple(s.name for s in active)
+            ):
+                self._prompt = replace(
+                    self._prompt,
+                    schedule_ids=tuple(s.id for s in active),
+                    schedule_names=tuple(s.name for s in active),
+                )
+                updated = self._prompt
             return PolicyUpdate(
-                dismiss_prompt=dismiss,
-                active_schedules=active,
+                prompt=updated, dismiss_prompt=dismiss, active_schedules=active
             )
         dismiss = self._prompt is not None
         self._prompt = None
@@ -407,7 +420,12 @@ class ApplicationFocusPolicy:
         if (
             previous is None
             or self._continued_key is None
-            or self._current_key != self._continued_key
+            or (
+                self._website_current_key
+                if previous.target_type is TargetType.WEBSITE
+                else self._current_key
+            )
+            != self._continued_key
             or self._prompt is not None
         ):
             return None
@@ -441,6 +459,14 @@ class ApplicationFocusPolicy:
             and (entry.schedule_id is None or entry.schedule_id in active_ids)
             for entry in self._configuration.applications
         )
+
+    def _prompt_allowed(
+        self, prompt: AttentionPrompt, schedules: tuple[Schedule, ...]
+    ) -> bool:
+        if prompt.target_type is TargetType.WEBSITE:
+            return self._is_website_allowed(prompt.target_key or "", schedules)
+        path = normalize_windows_path(prompt.executable_path)
+        return self._is_system_path(path) or self._is_allowed(path, schedules)
 
     def _observe_recent(
         self, observation: ForegroundObservation, normalized_path: str

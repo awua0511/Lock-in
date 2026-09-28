@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import date
 
 from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QApplication, QMenu, QStyle, QSystemTrayIcon
+from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from lock_in.domain.models import (
     ApplicationAllowlistEntry,
@@ -14,6 +15,7 @@ from lock_in.domain.models import (
     WebsiteAllowlistEntry,
 )
 from lock_in.platform.windows.system_events import WindowsSystemEventFilter
+from lock_in.reviews.models import DailyReview, NotificationResult
 from lock_in.rules.application_policy import (
     AttentionPrompt,
     FocusConfiguration,
@@ -23,6 +25,7 @@ from lock_in.rules.application_policy import (
 from lock_in.ui.bridge import QtUiBridge
 from lock_in.ui.main_window import MainWindow
 from lock_in.ui.prompt_dialog import AttentionPromptDialog
+from lock_in.ui.theme import application_icon
 
 
 class DesktopShell:
@@ -44,12 +47,18 @@ class DesktopShell:
         on_prompt_decision: Callable[[str, PolicyDecision], None],
         *,
         tray_enabled: bool = True,
+        on_request_review: Callable[[date], None] = lambda _day: None,
+        on_notification_result: Callable[[NotificationResult], None] = lambda _result: (
+            None
+        ),
     ) -> None:
         self._application = application
         self._tray: QSystemTrayIcon | None = None
         self.last_failed_component: str | None = None
         self._prompt: AttentionPromptDialog | None = None
         self._on_prompt_decision = on_prompt_decision
+        self._on_notification_result = on_notification_result
+        self._notification_day: date | None = None
 
         tray_available = tray_enabled and QSystemTrayIcon.isSystemTrayAvailable()
         self._window = MainWindow(
@@ -62,6 +71,7 @@ class DesktopShell:
             on_save_settings=on_save_settings,
             on_save_website=on_save_website,
             on_delete_website=on_delete_website,
+            on_request_review=on_request_review,
         )
         application.setQuitOnLastWindowClosed(not tray_available)
         self._system_events = WindowsSystemEventFilter(
@@ -78,6 +88,8 @@ class DesktopShell:
         bridge.dismiss_attention_prompt_signal.connect(self.dismiss_attention_prompt)
         bridge.operation_error_signal.connect(self._window.report_operation_error)
         bridge.browser_health_signal.connect(self._window.report_browser_health)
+        bridge.review_signal.connect(self._window.update_review)
+        bridge.review_notification_signal.connect(self.show_review_notification)
 
         if tray_available:
             menu = QMenu()
@@ -89,19 +101,44 @@ class DesktopShell:
             exit_action.triggered.connect(on_exit)
             menu.addAction(exit_action)
 
-            icon = application.style().standardIcon(
-                QStyle.StandardPixmap.SP_DialogApplyButton
-            )
+            icon = application_icon()
             application.setWindowIcon(icon)
             self._tray = QSystemTrayIcon(icon, application)
             self._tray.setToolTip("Lock-In")
             self._tray.setContextMenu(menu)
             self._tray.activated.connect(self._on_tray_activated)
+            self._tray.messageClicked.connect(self._open_notified_review)
             self._tray.show()
 
     @property
     def tray_visible(self) -> bool:
         return self._tray is not None and self._tray.isVisible()
+
+    def show_review_notification(self, review: DailyReview) -> None:
+        status = "unavailable"
+        if (
+            self._tray is not None
+            and self._tray.isVisible()
+            and self._tray.supportsMessages()
+        ):
+            try:
+                self._notification_day = review.day
+                self._tray.showMessage(
+                    f"Lock-In review — {review.day}",
+                    review.summary,
+                    QSystemTrayIcon.MessageIcon.Information,
+                    10000,
+                )
+                # Windows does not acknowledge visibility (Do Not Disturb may hide it).
+                status = "submitted_to_windows"
+            except Exception:
+                status = "failed"
+        self._on_notification_result(NotificationResult(review.day, status))
+
+    def _open_notified_review(self) -> None:
+        if self._notification_day is not None:
+            self._window.open_review(self._notification_day)
+            self.show_main_window()
 
     def show_main_window(self) -> None:
         self._window.show()
@@ -110,6 +147,7 @@ class DesktopShell:
 
     def report_component_failure(self, component: str) -> None:
         self.last_failed_component = component
+        self._window.report_component_failure(component)
         if self._tray is not None:
             self._tray.setToolTip("Lock-In (a component needs attention)")
 

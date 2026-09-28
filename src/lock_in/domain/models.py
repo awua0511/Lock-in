@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from enum import StrEnum
 
+import idna
+
 
 def new_id() -> str:
     return str(uuid.uuid4())
@@ -111,10 +113,20 @@ def normalize_domain(value: str) -> str:
     if "://" in domain or "/" in domain or "?" in domain or "#" in domain:
         raise ValueError("domain must be a hostname, not a URL")
     try:
-        ipaddress.ip_address(domain)
-        return domain
+        address = (
+            domain[1:-1] if domain.startswith("[") and domain.endswith("]") else domain
+        )
+        return str(ipaddress.ip_address(address))
     except ValueError:
         pass
+    try:
+        # Python's built-in IDNA codec maps e.g. faß.de to fass.de, which is
+        # a different site from the browser's non-transitional hostname.
+        domain = idna.encode(domain, uts46=True).decode("ascii").rstrip(".")
+    except UnicodeError as error:
+        raise ValueError("domain is not a valid hostname") from error
+    if len(domain) > 253:
+        raise ValueError("domain is not a valid hostname")
     labels = domain.split(".")
     if any(
         not label
@@ -194,6 +206,7 @@ class AttentionEvent:
     decision: AttentionDecision
     foreground_seconds: int = 0
     id: str = field(default_factory=new_id)
+    prompt_kind: str = "entry"
 
     def __post_init__(self) -> None:
         _require_text(self.id, "attention event id")
@@ -202,3 +215,5 @@ class AttentionEvent:
         _require_aware(self.occurred_at, "occurred_at")
         if self.foreground_seconds < 0:
             raise ValueError("foreground_seconds cannot be negative")
+        if self.prompt_kind not in {"entry", "follow_up", "legacy"}:
+            raise ValueError("invalid prompt kind")

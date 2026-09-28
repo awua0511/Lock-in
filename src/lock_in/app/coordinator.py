@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from datetime import datetime
+from datetime import date, datetime
 from typing import Protocol
 
 from lock_in.app.configuration_service import ConfigurationService
@@ -18,6 +18,7 @@ from lock_in.app.events import (
 )
 from lock_in.app.focus_service import FocusApplicationService
 from lock_in.app.logging_setup import safe_log
+from lock_in.app.review_service import ReviewCompletion, ReviewService
 from lock_in.context.application_service import BrowserContextApplicationService
 from lock_in.domain.models import (
     ApplicationAllowlistEntry,
@@ -26,6 +27,7 @@ from lock_in.domain.models import (
     WebsiteAllowlistEntry,
 )
 from lock_in.platform.windows.foreground_monitor import ForegroundObservation
+from lock_in.reviews.models import NotificationResult
 from lock_in.rules.application_policy import FocusConfiguration, PolicyDecision
 
 
@@ -51,6 +53,7 @@ class ApplicationCoordinator:
         focus: FocusApplicationService | None = None,
         browser_context: BrowserContextApplicationService | None = None,
         on_explicit_exit: Callable[[], None] | None = None,
+        reviews: ReviewService | None = None,
     ) -> None:
         self._ui = ui
         self._logger = logger
@@ -58,6 +61,7 @@ class ApplicationCoordinator:
         self._focus = focus
         self._browser_context = browser_context
         self._on_explicit_exit = on_explicit_exit or (lambda: None)
+        self._reviews = reviews
 
     def handle(self, event: ApplicationEvent) -> None:
         safe_log(
@@ -68,6 +72,26 @@ class ApplicationCoordinator:
         )
         if event.kind is ApplicationEventKind.SHOW_MAIN_WINDOW:
             self._ui.show_main_window()
+        elif event.kind is ApplicationEventKind.STARTED and self._reviews is not None:
+            self._reviews.request(datetime.now().astimezone().date())
+        elif (
+            event.kind is ApplicationEventKind.REQUEST_REVIEW
+            and self._reviews is not None
+            and isinstance(event.payload, date)
+        ):
+            self._reviews.request(event.payload)
+        elif (
+            event.kind is ApplicationEventKind.REVIEW_COMPLETED
+            and self._reviews is not None
+            and isinstance(event.payload, ReviewCompletion)
+        ):
+            self._reviews.complete(event.payload)
+        elif (
+            event.kind is ApplicationEventKind.REVIEW_NOTIFICATION_RESULT
+            and self._reviews is not None
+            and isinstance(event.payload, NotificationResult)
+        ):
+            self._reviews.notification_result(event.payload)
         elif event.kind is ApplicationEventKind.SHUTDOWN_REQUESTED:
             try:
                 self._on_explicit_exit()
@@ -127,11 +151,17 @@ class ApplicationCoordinator:
             if self._browser_context is not None:
                 self._browser_context.tick(event.payload.monotonic_ms)
             self._focus.tick(event.payload.wall_time, event.payload.monotonic_ms)
+            if self._reviews is not None:
+                self._reviews.tick(event.payload.wall_time, event.payload.monotonic_ms)
         elif (
             event.kind is ApplicationEventKind.SYSTEM_AVAILABILITY_CHANGED
             and self._focus is not None
             and isinstance(event.payload, SystemAvailabilityEvent)
         ):
+            if self._browser_context is not None:
+                self._browser_context.system_availability_changed(
+                    event.payload.available, event.payload.monotonic_ms
+                )
             self._focus.system_availability_changed(
                 event.payload.available, event.payload.monotonic_ms
             )

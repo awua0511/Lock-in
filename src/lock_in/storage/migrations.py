@@ -126,6 +126,41 @@ MIGRATIONS = (
             "CREATE INDEX idx_attention_session ON attention_events(focus_session_id)",
         ),
     ),
+    Migration(
+        3,
+        "daily_reviews",
+        (
+            "ALTER TABLE attention_events ADD COLUMN local_day TEXT",
+            "ALTER TABLE attention_events ADD COLUMN local_occurred_at TEXT",
+            "ALTER TABLE attention_events ADD COLUMN prompt_kind TEXT NOT NULL DEFAULT 'legacy'",
+            "CREATE INDEX idx_attention_local_day ON attention_events(local_day)",
+            """
+            CREATE TABLE review_usage (
+                id TEXT PRIMARY KEY,
+                local_day TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                scheduled_ms INTEGER NOT NULL CHECK (scheduled_ms > 0),
+                outside_ms INTEGER NOT NULL CHECK (outside_ms BETWEEN 0 AND scheduled_ms)
+            )
+            """,
+            "CREATE INDEX idx_review_usage_day ON review_usage(local_day)",
+            """
+            CREATE TABLE review_deliveries (
+                local_day TEXT PRIMARY KEY,
+                attempted_at TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                status TEXT NOT NULL,
+                delivery_day TEXT UNIQUE
+            )
+            """,
+            """
+            CREATE TABLE review_state (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+            """,
+        ),
+    ),
 )
 
 

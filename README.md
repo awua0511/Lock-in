@@ -4,7 +4,7 @@ Lock-In is a local-first focus assistant for Windows. During a user-defined work
 
 Lock-In does not forcibly block software. Its purpose is to interrupt automatic avoidance and turn it into a conscious choice: return to the previous work context or continue intentionally.
 
-> Lock-In is under active development. The four risk-validation experiments and Milestones 0–4 are accepted. Milestone 5 browser integration is implemented and awaiting manual acceptance.
+> Lock-In is under active development. The four experiments and Milestones 0–6 have progressed to the final implementation stage. Milestone 7 adds an unsigned Windows test package, recoverable per-user setup, performance checks, and a redesigned UI. Final manual acceptance is still required; this is not a public release.
 
 ## Project Status
 
@@ -17,7 +17,7 @@ The repository currently contains four completed risk-validation experiments:
 | [3. Browser communication chain](EXPERIMENT_03.md) | Chrome/Edge extension → Native Messaging Host → Named Pipe → single-instance tray process → acknowledgement. |
 | [4. Context aggregation simulator](EXPERIMENT_04.md) | Safe correlation of Windows and browser events, including stale, late, duplicate, out-of-order, ambiguous, and timed-out messages. |
 
-The experiments remain isolated prototypes. Milestone 5 connects Chrome and Edge context to the application focus loop and website allowlists. See [PLAN.md](PLAN.md) for the delivery sequence.
+The experiments remain isolated prototypes. The application includes application/website reminders, follow-up timing, local daily reviews, and six sidebar pages for configuration and status. See [PLAN.md](PLAN.md) for the delivery sequence and [M7 acceptance](MILESTONE_07.md) for package and UI testing.
 
 ## Product Principles
 
@@ -57,9 +57,13 @@ Work period: 13:00–13:40
 
 Choosing to continue does not cancel the work period or apply a penalty. Leaving and later re-entering the target creates a new prompt. Continued foreground use can trigger a configurable follow-up prompt.
 
+Website prompts offer only **Continue anyway**. Closing a prompt with X or Escape also counts as Continue. Follow-up timing applies to both applications and resolved websites, and pauses while Lock-In itself is foreground.
+
 ### Evening review
 
-A local daily review summarizes scheduled work time, non-allowlisted entries, return/continue decisions, and non-allowlisted foreground time. It reports facts without judging the user's choices.
+The **Reviews** page shows recorded schedule time, entry prompts, follow-up prompts, decisions, non-allowlisted foreground time, and event details for a selected local date. Recorded schedule time covers observed activity while Lock-In is running; it is not planned time or proof of productive work. Overlapping schedules count once, and unknown websites are not treated as non-allowlisted.
+
+**Settings** controls the daily notification time and history retention. Lock-In requests at most one Windows review notification per local day, including a latest missed review after restart or wake. Clicking it opens the review. Windows notification settings may hide it; the in-app review remains available. History before Milestone 6 has no reconstructed duration or local-date statistics.
 
 ## Architecture
 
@@ -85,9 +89,15 @@ See [ARCHITECTURE.en.md](ARCHITECTURE.en.md) for process boundaries, message con
 | Local persistence | SQLite |
 | Browser extension | Manifest V3 + JavaScript/TypeScript |
 | Local browser IPC | Native Messaging + Windows Named Pipe |
-| Packaging candidates | PyInstaller or Nuitka |
+| Windows test packaging | PyInstaller, shared onedir runtime |
 
-The experiments use only Python's standard library where practical. PySide6 is now a production runtime dependency; storage dependencies remain deferred to Milestone 2.
+The production runtime uses PySide6, SQLite from Python's standard library, `tzdata` for schedule time zones, and `idna` for international hostname normalization. Development dependencies and version ranges are declared in `pyproject.toml`.
+
+## Windows Test Package
+
+M7 provides a Python-free test bundle and a per-user setup tool. Extract the complete ZIP, exit any old tray instance, and launch `LockIn/lock-in.exe`. It uses your existing local settings. Browser integration requires registration for the extension ID shown in each profile.
+
+See [package installation and manual acceptance](MILESTONE_07.md) and [measured results / remaining release gates](docs/RELEASE_VALIDATION.md). The installer can stage updates, roll back compatible schemas, and uninstall without removing user data. There is no automatic update or sign-in startup task.
 
 ## Development Setup
 
@@ -96,8 +106,8 @@ Requirements:
 - Windows 10 or Windows 11.
 - Python 3.12 or newer.
 - PowerShell.
-- Node.js 20 or newer for browser-extension syntax checks.
-- Chrome or Edge only when running the browser experiment.
+- Node.js 20 or newer for browser-extension syntax and race-regression checks.
+- Chrome or Edge for website integration and browser acceptance tests.
 
 Create the environment and install the project:
 
@@ -112,7 +122,7 @@ Run the complete automated test suite:
 .\.venv\Scripts\python -m pytest -v
 ```
 
-Run the current production skeleton:
+Run the current desktop application:
 
 ```powershell
 .\.venv\Scripts\lock-in.exe
@@ -150,20 +160,23 @@ src/lock_in/
 ├── communication/       Versioned protocol primitives
 ├── context/             ContextAggregator and immutable contexts
 ├── domain/              Immutable schedules, allowlists, settings, and history
+├── distribution/        Validated bundles and recoverable per-user installation
 ├── experiments/         Standalone risk-validation programs
-├── ipc/                  Reserved production IPC boundary
+├── ipc/                 Production browser Named Pipe server
 ├── monitoring/           Production foreground-monitor lifecycle adapter
 ├── native_host/         Native Messaging relay and registration
 ├── notifications/       Reserved notification boundary
 ├── platform/windows/    Win32 adapters
 ├── prompts/             Entry-prompt policy prototype
+├── reviews/             Daily review models and independent usage measurement
 ├── rules/               Pure schedules, application matching, and prompt policy
-├── sessions/            Reserved timing boundary
+├── sessions/            Monotonic continued-use timing
 ├── storage/             SQLite migrations, worker, and typed repositories
 └── ui/                  PySide6 window, tray, and thread-safe signal bridge
 
 browser_extension/
-└── experiment3/         Chrome/Edge communication extension
+├── experiment3/         Chrome/Edge communication experiment
+└── production/          Chrome/Edge website-context extension
 
 scenarios/               Replayable ContextAggregator event timelines
 tests/                   Unit and deterministic replay tests
@@ -177,6 +190,10 @@ tests/                   Unit and deterministic replay tests
 - [Milestone 3 acceptance](MILESTONE_03.md)
 - [Milestone 4 acceptance](MILESTONE_04.md)
 - [Milestone 5 acceptance](MILESTONE_05.md)
+- [Milestone 6 acceptance](MILESTONE_06.md)
+- [Milestone 7 package and UI acceptance](MILESTONE_07.md)
+- [Release validation results](docs/RELEASE_VALIDATION.md)
+- [Bug audit, fixes, and regression checklist](BUG_REVIEW.md)
 - [Technical architecture](ARCHITECTURE.en.md)
 - [Validated baseline and acceptance](docs/BASELINE.md)
 - [Supported platforms](docs/SUPPORT.md)

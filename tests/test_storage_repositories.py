@@ -244,3 +244,25 @@ def test_configuration_deletion_is_explicit_and_preserves_history(
         )
     finally:
         worker.stop(2)
+
+
+def test_corrupted_settings_fail_without_resetting_saved_values(tmp_path):
+    worker = DatabaseWorker(tmp_path / "profile.sqlite3")
+    worker.start()
+    repositories = Repositories.create(worker)
+    try:
+        worker.submit(
+            lambda c: c.execute(
+                "INSERT OR REPLACE INTO app_settings(profile, review_time, history_retention_days, follow_up_seconds) VALUES ('default', 'invalid-time', 90, 300)"
+            )
+        ).result()
+        with pytest.raises(ValueError):
+            repositories.settings.load().result()
+        value = worker.submit(
+            lambda c: c.execute(
+                "SELECT review_time FROM app_settings WHERE profile = 'default'"
+            ).fetchone()[0]
+        ).result()
+        assert value == "invalid-time"
+    finally:
+        worker.stop(2)

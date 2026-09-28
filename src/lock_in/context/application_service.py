@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import time
+import os
 import uuid
 from collections.abc import Callable
 from typing import Any
@@ -29,6 +29,8 @@ class BrowserContextApplicationService:
         focus: FocusApplicationService,
         send: Callable[[str, dict[str, Any]], bool],
         health_sink: Callable[[str], None] | None = None,
+        *,
+        own_pid: int | None = None,
     ) -> None:
         self._focus = focus
         self._send = send
@@ -36,6 +38,10 @@ class BrowserContextApplicationService:
         self._aggregator = ContextAggregator(snapshot_wait_ms=300)
         self._foreground: ForegroundObservation | None = None
         self._connections: dict[str, str] = {}
+        self._own_pid = os.getpid() if own_pid is None else own_pid
+        self._own_foreground = False
+        self._available = True
+        self._event_ms = 0
 
     @property
     def current_context(self) -> ForegroundContext | None:
@@ -44,6 +50,13 @@ class BrowserContextApplicationService:
     def foreground_observed(
         self, observation: ForegroundObservation, monotonic_ms: int
     ) -> None:
+        self._event_ms = monotonic_ms
+        self._own_foreground = observation.pid == self._own_pid
+        if self._own_foreground or not self._available:
+            # Record/pause own-window use without destroying the decision whose
+            # dialog just took focus. Browser messages cannot act behind it.
+            self._focus.observe_foreground(observation)
+            return
         self._foreground = observation
         browser_kind = _browser_kind(observation.executable_path)
         executable_path = observation.executable_path or ""
@@ -61,6 +74,7 @@ class BrowserContextApplicationService:
                 pid=observation.pid or 0,
                 executable_path=executable_path,
                 browser_name=observation.application_name or browser_kind.title(),
+                monotonic_ms=monotonic_ms,
             )
         else:
             self._focus.observe_website_context(
@@ -69,9 +83,11 @@ class BrowserContextApplicationService:
                 pid=observation.pid or 0,
                 executable_path=executable_path,
                 browser_name="",
+                monotonic_ms=monotonic_ms,
             )
 
     def browser_event(self, event: dict[str, Any], monotonic_ms: int) -> None:
+        self._event_ms = monotonic_ms
         kind = event.get("event")
         connection_id = event.get("connectionId")
         if not isinstance(connection_id, str):
@@ -97,6 +113,8 @@ class BrowserContextApplicationService:
                 self._apply_context(result.context)
             return
         if kind != "browser_context_snapshot":
+            return
+        if self._own_foreground or not self._available:
             return
         payload = event.get("payload")
         if not isinstance(payload, dict):
@@ -149,6 +167,9 @@ class BrowserContextApplicationService:
             self._send_snapshot_requests(result.snapshot_request)
 
     def tick(self, monotonic_ms: int) -> None:
+        self._event_ms = monotonic_ms
+        if self._own_foreground or not self._available:
+            return
         result = self._aggregator.advance_time(monotonic_ms)
         if result.context_changed:
             self._apply_context(result.context)
@@ -162,6 +183,8 @@ class BrowserContextApplicationService:
                 )
 
     def _apply_context(self, context: ForegroundContext | None) -> None:
+        if self._own_foreground or not self._available:
+            return
         observation = self._foreground
         if observation is None:
             return
@@ -171,17 +194,32 @@ class BrowserContextApplicationService:
             pid=observation.pid or 0,
             executable_path=observation.executable_path or "",
             browser_name=observation.application_name or "Browser",
+            monotonic_ms=self._event_ms,
         )
 
     def _repeat_snapshot_request(self, browser: str) -> None:
+        if self._own_foreground or not self._available:
+            return
         context = self._aggregator.current_context
         if context is None or context.application.browser_kind != browser:
             return
-        # A new foreground epoch is the only valid way to bind a first snapshot.
-        observation = self._foreground
-        if observation is None:
+        if self._foreground is None:
             return
-        self.foreground_observed(observation, time.monotonic_ns() // 1_000_000)
+        # Revalidate at connection receipt time without replaying an old
+        # foreground timestamp into the monotonic timer/usage tracker.
+        result = self._aggregator.foreground_changed(
+            received_ms=self._event_ms, application=context.application
+        )
+        self._apply_context(result.context)
+        if result.snapshot_request is not None:
+            self._send_snapshot_requests(result.snapshot_request)
+
+    def system_availability_changed(self, available: bool, monotonic_ms: int) -> None:
+        self._available = available
+        self._foreground = None
+        self._aggregator.foreground_changed(
+            received_ms=monotonic_ms, application=ApplicationIdentity("", None)
+        )
 
     def _publish_health(self) -> None:
         counts = {

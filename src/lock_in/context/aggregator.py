@@ -151,6 +151,8 @@ class ContextAggregator:
     ) -> AggregationResult:
         self._require_nonnegative_time(received_ms)
         self._clients.pop(connection_id, None)
+        self._last_sequence.pop(connection_id, None)
+        self._seen_sequences.pop(connection_id, None)
         context = self._context
         if context is not None and context.browser is not None:
             if context.browser.connection_id == connection_id:
@@ -295,32 +297,19 @@ class ContextAggregator:
             return self._unchanged(EventDisposition.REJECTED, "unbound_connection")
         if snapshot.client_instance_id != bound.client_instance_id:
             return self._unchanged(EventDisposition.REJECTED, "client_mismatch")
-        if not snapshot.window_focused:
-            # The foreground monitor is authoritative for leaving a browser.
-            # The Lock-In prompt can take foreground while Chrome reports an
-            # unfocused window; that must not erase Continue consent.
-            return self._unchanged(
-                EventDisposition.IGNORED, "browser_window_not_foreground"
-            )
-        if not snapshot.domain:
+        if not snapshot.domain or not snapshot.window_focused:
             return self._set_unknown(
                 snapshot.received_ms, "proactive_snapshot_ambiguous"
             )
-
-        self._context_revision += 1
-        browser = self._resolved_browser(snapshot)
-        self._context = self._make_context(
-            received_ms=snapshot.received_ms,
-            application=context.application,
-            resolution=ContextResolution.RESOLVED,
-            browser=browser,
-        )
-        return AggregationResult(
-            EventDisposition.ACCEPTED,
-            "proactive_snapshot_applied",
-            True,
-            self._context,
-        )
+        if (snapshot.window_id, snapshot.tab_id, snapshot.domain) == (
+            bound.window_id,
+            bound.tab_id,
+            bound.domain,
+        ):
+            return self._unchanged(EventDisposition.IGNORED, "same_browser_context")
+        # An unsolicited update can have been sampled before the current HWND
+        # became foreground. Treat it as an invalidation, never an authority.
+        return self._request_current_browser_snapshot(snapshot.received_ms)
 
     def _request_current_browser_snapshot(self, received_ms: int) -> AggregationResult:
         context = self._context
@@ -460,6 +449,8 @@ class ContextAggregator:
             return EventDisposition.DUPLICATE
         previous = self._last_sequence.get(connection_id)
         seen.add(sequence)
+        if len(seen) > 256:
+            seen.difference_update(sorted(seen)[:-256])
         if previous is not None and sequence < previous:
             return EventDisposition.OUT_OF_ORDER
         self._last_sequence[connection_id] = sequence

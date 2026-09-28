@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import queue
 import threading
 import time
 from collections.abc import Callable
@@ -31,6 +32,11 @@ class _Session:
     ready: bool = False
     outgoing_sequence: int = 0
     send_lock: threading.Lock = dataclass_field(default_factory=threading.Lock)
+    outbox: queue.Queue = dataclass_field(
+        default_factory=lambda: queue.Queue(maxsize=32)
+    )
+    closed: threading.Event = dataclass_field(default_factory=threading.Event)
+    writer: threading.Thread | None = None
 
 
 class BrowserPipeServer:
@@ -52,6 +58,7 @@ class BrowserPipeServer:
         self._all_connections: set[Connection] = set()
         self._sessions: dict[str, _Session] = {}
         self._connections_lock = threading.Lock()
+        self._close_lock = threading.Lock()
         self._handlers: set[threading.Thread] = set()
         self._handlers_lock = threading.Lock()
         self._sequences = SequenceTracker()
@@ -80,13 +87,13 @@ class BrowserPipeServer:
                 pass
         with self._connections_lock:
             connections = tuple(self._all_connections)
+            sessions = tuple(self._sessions.values())
             self._connections.clear()
             self._all_connections.clear()
+        for session in sessions:
+            session.closed.set()
         for connection in connections:
-            try:
-                connection.close()
-            except OSError:
-                pass
+            self._close_connection(connection)
         deadline = time.monotonic() + timeout
         if self._accept_thread is not None:
             self._accept_thread.join(max(0.0, deadline - time.monotonic()))
@@ -94,29 +101,54 @@ class BrowserPipeServer:
             handlers = tuple(self._handlers)
         for handler in handlers:
             handler.join(max(0.0, deadline - time.monotonic()))
+        for session in sessions:
+            if session.writer is not None:
+                session.writer.join(max(0.0, deadline - time.monotonic()))
 
     def send(self, connection_id: str, message: dict[str, Any]) -> bool:
         with self._connections_lock:
             connection = self._connections.get(connection_id)
-        if connection is None:
+            session = self._sessions.get(connection_id)
+        if connection is None or session is None or session.closed.is_set():
             return False
         try:
-            session = self._sessions.get(connection_id)
-            if session is None:
-                return False
-            with session.send_lock:
+            session.outbox.put_nowait(dict(message))
+            return True
+        except queue.Full:
+            # A stopped Host must not hold the serialized application queue.
+            session.closed.set()
+            self._close_connection(connection)
+            return False
+
+    def _write_outbox(self, connection: Connection, session: _Session) -> None:
+        try:
+            while not self._stop.is_set() and not session.closed.is_set():
+                try:
+                    message = session.outbox.get(timeout=0.1)
+                except queue.Empty:
+                    continue
                 outgoing = {
                     **message,
                     "clientInstanceId": session.client_id,
                     "browser": session.browser,
-                    "connectionId": connection_id,
+                    "connectionId": session.connection_id,
                     "sequence": session.outgoing_sequence,
                 }
                 session.outgoing_sequence += 1
-                connection.send_bytes(encode_message(outgoing))
-            return True
+                with session.send_lock:
+                    connection.send_bytes(encode_message(outgoing))
         except (OSError, EOFError, ProtocolError):
-            return False
+            session.closed.set()
+            self._close_connection(connection)
+
+    def _close_connection(self, connection: Connection) -> None:
+        # Connection.close() checks and clears its handle in separate steps.
+        # Stop, reader and writer may all close it concurrently on Windows.
+        with self._close_lock:
+            try:
+                connection.close()
+            except OSError:
+                pass
 
     def broadcast(self, browser: str, message: dict[str, Any]) -> tuple[str, ...]:
         with self._connections_lock:
@@ -189,14 +221,20 @@ class BrowserPipeServer:
                             raise ProtocolError(
                                 "duplicate_connection", "connectionId is already active"
                             )
-                    key = candidate_key
-                    session.connection_id = key
-                    session.client_id = envelope.client_instance_id
-                    session.browser = envelope.browser
-                    session.ready = True
-                    with self._connections_lock:
+                        key = candidate_key
+                        session.connection_id = key
+                        session.client_id = envelope.client_instance_id
+                        session.browser = envelope.browser
+                        session.ready = True
                         self._connections[key] = connection
                         self._sessions[key] = session
+                    session.writer = threading.Thread(
+                        target=self._write_outbox,
+                        args=(connection, session),
+                        name="browser-pipe-writer",
+                        daemon=True,
+                    )
+                    session.writer.start()
                     response = response_for(
                         envelope,
                         "hello_ack",
@@ -264,6 +302,7 @@ class BrowserPipeServer:
             except (EOFError, OSError, ProtocolError):
                 pass
         finally:
+            session.closed.set()
             if key is not None:
                 with self._connections_lock:
                     self._connections.pop(key, None)
@@ -276,7 +315,7 @@ class BrowserPipeServer:
                         "browser": session.browser,
                     }
                 )
-            connection.close()
+            self._close_connection(connection)
             with self._connections_lock:
                 self._all_connections.discard(connection)
             with self._handlers_lock:

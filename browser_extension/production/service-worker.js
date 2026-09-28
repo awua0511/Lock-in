@@ -7,6 +7,8 @@ let clientInstanceId = null;
 let sequence = 0;
 let reconnectAttempt = 0;
 let reconnectTimer = null;
+let snapshotGeneration = 0;
+let pendingCorrelation = null;
 
 async function initialize() {
   const stored = await chrome.storage.local.get(["clientInstanceId", "nextSequence"]);
@@ -41,6 +43,11 @@ function post(type, seq, payload = {}) {
 
 async function sendSnapshot(correlation = {}) {
   if (!port) return;
+  const generation = ++snapshotGeneration;
+  const activePort = port;
+  if (correlation.snapshotRequestId) pendingCorrelation = correlation;
+  const request = pendingCorrelation || {};
+  const isCurrent = () => generation === snapshotGeneration && port === activePort;
   try {
     const win = await chrome.windows.getLastFocused({ populate: false });
     const tabs = await chrome.tabs.query({ active: true, windowId: win.id });
@@ -49,30 +56,36 @@ async function sendSnapshot(correlation = {}) {
     const hostname = pageUrl && ["http:", "https:"].includes(pageUrl.protocol)
       ? pageUrl.hostname
       : null;
+    if (!isCurrent()) return;
     const seq = await nextSequence();
+    if (!isCurrent()) return;
     post("browser_context_snapshot", seq, {
       windowId: Number.isInteger(win.id) ? win.id : -1,
       tabId: Number.isInteger(tab?.id) ? tab.id : -1,
       domain: hostname || null,
-      windowFocused: Boolean(win.focused && tab && hostname),
-      snapshotRequestId: correlation.snapshotRequestId || null,
-      foregroundEpoch: Number.isInteger(correlation.foregroundEpoch)
-        ? correlation.foregroundEpoch
+      windowFocused: Boolean(win.focused),
+      snapshotRequestId: request.snapshotRequestId || null,
+      foregroundEpoch: Number.isInteger(request.foregroundEpoch)
+        ? request.foregroundEpoch
         : null
     });
+    if (pendingCorrelation === request) pendingCorrelation = null;
   } catch (_error) {
     // An unavailable or internal page remains unresolved; never reuse a prior host.
+    if (!isCurrent()) return;
     const seq = await nextSequence();
+    if (!isCurrent()) return;
     post("browser_context_snapshot", seq, {
       windowId: -1,
       tabId: -1,
       domain: null,
       windowFocused: false,
-      snapshotRequestId: correlation.snapshotRequestId || null,
-      foregroundEpoch: Number.isInteger(correlation.foregroundEpoch)
-        ? correlation.foregroundEpoch
+      snapshotRequestId: request.snapshotRequestId || null,
+      foregroundEpoch: Number.isInteger(request.foregroundEpoch)
+        ? request.foregroundEpoch
         : null
     });
+    if (pendingCorrelation === request) pendingCorrelation = null;
   }
 }
 
@@ -95,6 +108,7 @@ function connect() {
     return;
   }
   post("hello", 0, { extensionVersion: chrome.runtime.getManifest().version });
+  const connectedPort = port;
   port.onMessage.addListener((message) => {
     if (message.type === "hello_ack" && message.status === "accepted") {
       reconnectAttempt = 0;
@@ -104,7 +118,12 @@ function connect() {
     }
   });
   port.onDisconnect.addListener(() => {
+    // Reading lastError consumes the browser's expected disconnection error.
+    void chrome.runtime.lastError;
+    if (port !== connectedPort) return;
     port = null;
+    snapshotGeneration += 1;
+    pendingCorrelation = null;
     scheduleReconnect();
   });
 }

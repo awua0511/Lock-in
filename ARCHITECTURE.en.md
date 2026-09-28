@@ -25,7 +25,7 @@ The first release is planned around the following stack:
 | Local database | SQLite |
 | Browser extension | Manifest V3 + JavaScript/TypeScript |
 | Extension-to-client communication | Native Messaging |
-| Windows packaging | PyInstaller or Nuitka |
+| Windows packaging | PyInstaller shared onedir runtime |
 
 If the Python implementation encounters unacceptable startup time, resource usage, antivirus false positives, or distribution issues, the resident desktop component can migrate to C++/Qt while retaining the database schema and Native Messaging protocol.
 
@@ -119,6 +119,8 @@ Rules engine evaluates the context
 ```
 
 The callback must not perform database queries or complex UI work, because doing so could block the system event thread. The thread that registers the hook must maintain a Windows message loop and call `UnhookWinEvent` during shutdown.
+
+The hook includes Lock-In's own windows. Self-exclusion happens in policy, not in the hook: prompt/settings focus must pause continued-use timing and stop attributing outside-allowlist usage to the previous application. While an own window is foreground, browser updates cannot evaluate rules or invalidate the decision currently displayed. Returning to a browser requires a fresh correlated snapshot.
 
 ### Application Identity Resolution
 
@@ -264,7 +266,7 @@ Correlation rules:
 3. An initial snapshot may resolve the pending context only when it echoes the current `snapshotRequestId` and `foregroundEpoch`, has a supported protocol version and newer `sequence`, claims a focused window, and arrives inside the validity window. Arrival time alone is never proof of correlation.
 4. Resolve only after every expected healthy extension instance responds and exactly one valid focused candidate exists. A cached or proactive snapshot cannot resolve a pending context.
 5. If responses are missing at the deadline, multiple candidates are equally credible, or no valid candidate exists, produce `UnknownBrowserContext`. Never reuse the previous domain.
-6. While the browser remains foreground, only a proactive snapshot from the already bound extension instance may increment `contextRevision` and create a new logical context without changing the Windows `foregroundEpoch`.
+6. While the browser remains foreground, a changed proactive snapshot from the bound extension invalidates the old binding and requests a fresh correlated snapshot. It never directly supplies the replacement domain, even for the same browser window. Identical snapshots do not increment `contextRevision`. Internal pages have no domain and produce unknown context.
 7. When Windows switches to another application, invalidate the previous browser context immediately. Late browser messages may refresh the cache but cannot trigger a prompt.
 
 Suggested initial parameters:
@@ -353,9 +355,13 @@ Host attempts to connect to per-user Named Pipe
 
 The client handles concurrent startup races through its mutex: several Hosts may attempt to launch it, but only one tray process survives. Host retries must have explicit limits and must never loop indefinitely.
 
+Production Host launches include `--host-launched`. The client rechecks the explicit-exit marker after obtaining its mutex; a delayed Host launch cannot clear that marker. Only a manual launch of the default profile clears it. Production relays do not enable Experiment 3 crash-injection commands.
+
 After a client upgrade or restart, existing Hosts disconnect and exit; extensions subsequently call `connectNative` again. The architecture must not assume a Native Messaging connection is permanent.
 
 ### Per-User Named Pipe
+
+Production outbound snapshot requests use a bounded per-connection outbox and a dedicated writer, so an unresponsive Host cannot block the serialized policy dispatcher. An overflowing outbox disconnects that peer. Handshake registration and handle closure are serialized to prevent duplicate connection ownership and Windows double-close races.
 
 The Pipe name includes the protocol major version and a value derived from the current user identity, for example:
 
@@ -364,6 +370,8 @@ The Pipe name includes the protocol major version and a value derived from the c
 ```
 
 Security requirements:
+
+The following are the security target, not a claim that SID-derived naming authenticates peers. The current standard-library listener does not yet install an explicit user-only ACL or verify peer user/session identity; those remain a broader-distribution gate in [release validation](docs/RELEASE_VALIDATION.md).
 
 - The Pipe ACL allows access only to the current interactive user.
 - The client rejects peers from another session or user.
@@ -518,6 +526,8 @@ Use a monotonic clock for duration calculations so system time or time-zone chan
 
 Milestone 4 implements this as a pure `ContinuedUseTimer`. It emits immutable closed segments and latches at most one follow-up for each threshold. Choosing Continue arms a new interval, but timing begins only after a matching foreground observation. A different foreground target invalidates the interval.
 
+Both applications and resolved websites use this timer. Own-window focus and pending browser revalidation pause it; the next verified matching target resumes it. Saving unrelated settings preserves accumulated foreground time, while allowlisting the target or ending its work schedules cancels consent/timing and dismisses an obsolete prompt. Continue, X, and Escape all submit the same decision. Window restoration never attaches external input queues; minimized windows are restored asynchronously, and denied activation does not prevent the prompt from closing.
+
 The Qt process receives `WM_WTSSESSION_CHANGE` and `WM_POWERBROADCAST` through a native-event filter. Lock and suspend close the current segment. Unlock and resume only make timing eligible again; they do not start a segment without a fresh foreground event. Partial intervals remain memory-only, so restart deliberately discards them instead of deriving elapsed time from wall-clock timestamps.
 
 ## Local Data
@@ -533,9 +543,14 @@ focus_sessions
 attention_events
 app_settings
 schema_migrations
+review_usage
+review_deliveries
+review_state
 ```
 
-Schema versions 1 and 2 implement these tables. Configuration tables are created before history tables so a failed history upgrade cannot invalidate active schedules or allowlists. Application and website allowlist rows contain an optional `schedule_id`: `NULL` represents a global user entry, while a value scopes the entry to one schedule. Foreign keys cascade schedule-owned configuration and set historical session references to `NULL` when a schedule is deleted.
+Schema versions 1 and 2 implement the original configuration and history tables. Configuration tables are created before history tables so a failed history upgrade cannot invalidate active schedules or allowlists. Application and website allowlist rows contain an optional `schedule_id`: `NULL` represents a global user entry, while a value scopes the entry to one schedule. Foreign keys cascade schedule-owned configuration and set historical session references to `NULL` when a schedule is deleted.
+
+Schema version 3 adds the three review tables plus original local-date/offset and entry/follow-up provenance on attention events. Pre-M6 events remain stored but are not assigned guessed local dates. `review_usage` stores immutable, idempotent monotonic usage checkpoints; it does not sum the durations attached to prompt/decision events. See [ADR 0007](docs/decisions/0007-local-daily-reviews.md) for the exact accounting and delivery guarantees.
 
 The production process owns one `DatabaseWorker`. That worker opens and migrates SQLite on its own thread, then serializes repository operations submitted by concurrent callers. A second worker for the same resolved path is rejected within the process. UI code receives futures and domain objects; it never receives SQLite connections or rows.
 
@@ -596,14 +611,13 @@ All cross-thread and cross-process events pass through a unified queue before th
 
 ## Local Notifications
 
-The evening review is triggered by a local schedule. Notification content is generated from data already aggregated for the day and does not depend on a network service.
+M6 checks the configured local review time approximately every 15 seconds while Windows is available. The existing SQLite worker atomically reserves a report date and delivery date before the Qt signal bridge requests a `QSystemTrayIcon` notification. Windows may suppress the banner; status records distinguish submission from confirmed visibility, which this API cannot establish.
 
-If sleep causes the notification time to be missed, the client may send a catch-up notification after resume when:
+Restart or resume can request one latest eligible missed review (today after the configured time, otherwise yesterday when a previous check exists). Older missed dates are coalesced with a recorded reason. A catch-up consumes the delivery day's slot, preventing a second notification that evening. Report-date and delivery-date uniqueness survive restart, time-zone changes, retention cleanup and history clearing. A reserved attempt interrupted by a crash is left unconfirmed rather than automatically repeated.
 
-- The day's review has not already been sent.
-- The current time remains inside a configured catch-up window.
+The Reviews view queries persisted counts and durations asynchronously and discards stale responses when the selected date changes. Duration checkpoints are flushed for a requested view. Original recorded local dates are stable even if the system time zone later changes. Retention removes expired activity records but preserves configuration, active sessions and minimal delivery receipts. Detailed acceptance and measurement limits are in [Milestone 6](MILESTONE_06.md).
 
-Only one catch-up notification should be sent.
+A persisted retention cutoff prevents delayed usage retries from restoring expired records. A catch-up report whose history is already expired is marked `expired_history: skipped` and does not consume today's delivery slot. Startup closes sessions left open by an interrupted previous process at their recorded start time, without inventing downtime usage, before opening current sessions.
 
 ## Privacy and Security
 
@@ -631,20 +645,19 @@ The default policy is to record a diagnostic error that contains no sensitive da
 
 ## Packaging and Distribution
 
-Personal testing can run directly from source. Production builds may use PyInstaller or Nuitka and include:
+M7 implements three PyInstaller entry points sharing an onedir runtime: a windowed desktop EXE, a console Native Host retaining binary stdio, and a command-line setup tool. The build strips unrelated DLL search paths, checks binary provenance, includes extension files and time-zone data, and writes a hash manifest and build-version record. No automatic updater, privileged service or sign-in startup task is installed.
 
-- The Windows client.
-- Native Messaging Host registration data.
-- SQLite initialization and migration files.
-- Browser extension installation instructions.
+Setup holds the production instance guard and stages each payload in a unique per-user version directory. Activation atomically replaces individual files while a recovery journal retains previous registration/file values. The next operation restores an interrupted activation before proceeding. Chrome/Edge registration covers both Windows registry views; extension IDs are explicit, and the unpacked-extension path remains stable across versions. Rollback is allowed only with the same schema version. Uninstall restores owned registrations where appropriate and never deletes the separate user-data profile. SHA-256 verifies integrity, not publisher authenticity.
 
-Before public distribution, evaluate:
+The release harness executes packaged processes with disposable profiles and namespaces, measures startup/CPU/working set/queue latency, and exercises communication plus setup lifecycle failures. Tests cannot certify untested Windows machines, real browser UI, mixed monitors, antivirus reputation, licensing or store acceptance. See [M7 acceptance](MILESTONE_07.md), [recorded validation](docs/RELEASE_VALIDATION.md), and [ADR 0008](docs/decisions/0008-recoverable-per-user-distribution.md).
 
-- Windows code signing.
-- SmartScreen behavior for unsigned installers.
-- An automatic update mechanism.
-- Chrome Web Store and Microsoft Edge Add-ons publication.
-- Cleanup of Native Messaging registration during uninstall.
+## Desktop Presentation
+
+`ui/theme.py` owns a shared light palette, typography, focus/disabled/error states and a code-drawn application icon. The main window uses sidebar navigation and independently scrollable pages. Overview displays schedule state and connection health; Reviews presents descriptive metric cards without reward or judgment. Operation feedback and component failures are visible across pages. Retention reductions require explicit confirmation.
+
+Styling does not move state into widgets: coordinator/worker boundaries remain unchanged. Website prompts still offer only Continue; X/Escape follow the same acknowledgement path. Source-level UI tests and deterministic offscreen previews cover navigation, narrow layouts and scale factors; real foreground restoration and display/session behavior remain manual tests.
+
+Internal `--diagnostics-file` enables bounded, in-memory event-latency samples and writes aggregate measurements on exit. Normal runs do not collect them. The packaged startup wrapper can write an opt-in exception traceback without locals; it may contain local paths and must be reviewed before sharing. Normal error dialogs contain only a generic startup-failure message.
 
 ## Testing Priorities
 
@@ -684,33 +697,33 @@ Risk-validation progress:
 
 - [x] Implement the desktop client's single-instance mutex.
 - [ ] Implement the per-user Named Pipe Server and ACL.
-- [ ] Implement the stateless Native Messaging Host.
-- [ ] Define and test handshake, protocol versioning, and message-size limits.
-- [ ] Implement heartbeat, timeout, and bounded reconnection behavior.
-- [ ] Implement ContextAggregator, `foregroundEpoch`, and `contextRevision`.
-- [ ] Verify Chrome, Edge, multi-window, and multi-profile snapshot correlation.
+- [x] Implement the stateless Native Messaging Host.
+- [x] Define and test handshake, protocol versioning, and message-size limits.
+- [x] Implement heartbeat, timeout, and bounded reconnection behavior.
+- [x] Implement ContextAggregator, `foregroundEpoch`, and `contextRevision`.
+- [x] Verify snapshot correlation through replay/integration tests and M5 acceptance; packaged real-browser regression remains in M7 acceptance.
 - [x] Confirm that only the tray client accesses SQLite.
 
 ### Phase 2: Timing and Reviews
 
-- [ ] Track application foreground time.
-- [ ] Implement follow-up prompts during continued use.
-- [ ] Store daily activity records.
-- [ ] Generate the evening review.
-- [ ] Send local Windows notifications.
+- [x] Track application foreground time.
+- [x] Implement follow-up prompts during continued use.
+- [x] Store daily activity records (M6).
+- [x] Generate the evening review (M6).
+- [x] Submit local Windows notifications (M6; visible delivery is controlled by Windows).
 
 ### Phase 3: Website Allowlist
 
-- [ ] Create the Manifest V3 browser extension.
-- [ ] Monitor active tabs and domain changes.
-- [ ] Establish Native Messaging communication.
-- [ ] Implement website allowlist rules.
-- [ ] Track non-allowlisted website foreground time.
+- [x] Create the Manifest V3 browser extension.
+- [x] Monitor active tabs and domain changes.
+- [x] Establish Native Messaging communication.
+- [x] Implement website allowlist rules.
+- [x] Track non-allowlisted website foreground time (M6).
 
 ### Phase 4: Packaging and Testing
 
-- [ ] Package the Windows executable.
+- [x] Package the Windows executable (unsigned M7 acceptance candidate).
 - [ ] Test supported Windows versions and display configurations.
 - [ ] Test Chrome, Edge, and Brave.
 - [x] Complete migration and failure-recovery testing.
-- [ ] Evaluate code signing and public distribution.
+- [x] Evaluate signing/public-distribution prerequisites; external publication is not authorized or performed.

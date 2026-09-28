@@ -21,11 +21,11 @@ def open_database(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     existed_with_data = path.exists() and path.stat().st_size > 0
     connection = sqlite3.connect(path, isolation_level=None)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA foreign_keys = ON")
-    connection.execute("PRAGMA journal_mode = WAL")
-    connection.execute("PRAGMA synchronous = FULL")
     try:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA journal_mode = WAL")
+        connection.execute("PRAGMA synchronous = FULL")
         current_version = _current_version(connection)
         target_version = MIGRATIONS[-1].version if MIGRATIONS else 0
         if existed_with_data and current_version < target_version:

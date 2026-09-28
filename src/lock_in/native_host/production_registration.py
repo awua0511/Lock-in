@@ -11,7 +11,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 if os.name == "nt":
-    import winreg
+    pass
 
 HOST_NAME = "com.lockin.desktop"
 _EXTENSION_ID = re.compile(r"^[a-p]{32}$")
@@ -22,6 +22,8 @@ _REGISTRY_PATHS = {
 
 
 def register_browser(browser: str, extension_ids: list[str]) -> Path:
+    from lock_in.distribution.installer import UserRegistry, atomic_write
+
     if browser not in _REGISTRY_PATHS:
         raise ValueError("browser must be chrome or edge")
     normalized = list(dict.fromkeys(value.strip().lower() for value in extension_ids))
@@ -48,23 +50,39 @@ def register_browser(browser: str, extension_ids: list[str]) -> Path:
         "type": "stdio",
         "allowed_origins": [f"chrome-extension://{value}/" for value in normalized],
     }
-    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, _REGISTRY_PATHS[browser]) as key:
-        winreg.SetValueEx(key, None, 0, winreg.REG_SZ, str(manifest_path))
+    registry = UserRegistry()
+    previous_values = registry.read(browser)
+    previous_file = manifest_path.read_bytes() if manifest_path.exists() else None
+    try:
+        atomic_write(
+            manifest_path, (json.dumps(manifest, indent=2) + "\n").encode("utf-8")
+        )
+        registry.write(browser, [str(manifest_path), str(manifest_path)])
+    except OSError:
+        registry.write(browser, previous_values)
+        if previous_file is None:
+            manifest_path.unlink(missing_ok=True)
+        else:
+            atomic_write(manifest_path, previous_file)
+        raise
     return manifest_path
 
 
 def unregister_browser(browser: str) -> None:
+    from lock_in.distribution.installer import UserRegistry
+
     if browser not in _REGISTRY_PATHS:
         raise ValueError("browser must be chrome or edge")
-    try:
-        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, _REGISTRY_PATHS[browser])
-    except FileNotFoundError:
-        pass
     directory = (
         Path(os.environ.get("LOCALAPPDATA", Path.home())) / "LockIn" / "NativeMessaging"
     )
-    (directory / f"{HOST_NAME}.{browser}.json").unlink(missing_ok=True)
+    manifest = directory / f"{HOST_NAME}.{browser}.json"
+    registry = UserRegistry()
+    registry.write(
+        browser,
+        [None if value == str(manifest) else value for value in registry.read(browser)],
+    )
+    manifest.unlink(missing_ok=True)
 
 
 def build_parser() -> argparse.ArgumentParser:

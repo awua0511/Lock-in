@@ -1,18 +1,20 @@
-"""Milestone 3 schedule and application-allowlist settings window."""
+"""Sidebar workspace for schedules, allowlists, local reviews and settings."""
 
 from __future__ import annotations
 
 import ntpath
 from collections.abc import Callable
-from datetime import date
+from datetime import date, datetime
 
-from PySide6.QtCore import Qt, QTime
+from PySide6.QtCore import QDate, Qt, QTime, QTimer
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDateEdit,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -22,8 +24,9 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSpinBox,
-    QTabWidget,
+    QStackedWidget,
     QTimeEdit,
     QVBoxLayout,
     QWidget,
@@ -39,7 +42,13 @@ from lock_in.domain.models import (
     Schedule,
     WebsiteAllowlistEntry,
 )
-from lock_in.rules.application_policy import FocusConfiguration, RecentApplication
+from lock_in.reviews.models import DailyReview
+from lock_in.rules.application_policy import (
+    FocusConfiguration,
+    RecentApplication,
+    active_schedules_at,
+)
+from lock_in.ui.theme import metric_card, text_label
 
 ScheduleCallback = Callable[[Schedule], None]
 IdentifierCallback = Callable[[str], None]
@@ -62,6 +71,7 @@ class MainWindow(QMainWindow):
         on_save_settings: SettingsCallback,
         on_save_website: WebsiteCallback,
         on_delete_website: IdentifierCallback,
+        on_request_review: Callable[[date], None] = lambda _day: None,
     ) -> None:
         super().__init__()
         self._hide_on_close = hide_on_close
@@ -73,47 +83,194 @@ class MainWindow(QMainWindow):
         self._on_save_settings = on_save_settings
         self._on_save_website = on_save_website
         self._on_delete_website = on_delete_website
+        self._on_request_review = on_request_review
         self._configuration = FocusConfiguration()
         self._selected_path: str | None = None
         self._capture_active = False
 
         self.setWindowTitle("Lock-In")
-        self.resize(720, 560)
-        tabs = QTabWidget()
-        tabs.addTab(self._build_overview_tab(), "Overview")
-        tabs.addTab(self._build_schedules_tab(), "Schedules")
-        tabs.addTab(self._build_applications_tab(), "Applications")
-        tabs.addTab(self._build_settings_tab(), "Settings")
-        tabs.addTab(self._build_websites_tab(), "Websites")
-        self.setCentralWidget(tabs)
+        self.resize(1080, 780)
+        self.setMinimumSize(760, 540)
+        root = QWidget()
+        body = QHBoxLayout(root)
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
+        sidebar = QWidget()
+        sidebar.setObjectName("sidebar")
+        sidebar.setFixedWidth(196)
+        side = QVBoxLayout(sidebar)
+        side.setContentsMargins(18, 30, 18, 22)
+        side.addWidget(text_label("Lock-In", "brand"))
+        side.addWidget(text_label("A little space to focus.", "sidebarNote"))
+        side.addSpacing(26)
+        self._navigation = QListWidget()
+        self._navigation.setObjectName("navigation")
+        self._navigation.setAccessibleName("Main navigation")
+        side.addWidget(self._navigation)
+        side.addWidget(
+            text_label("ON YOUR TERMS\nLocal data. Your choice.", "sidebarNote")
+        )
+        body.addWidget(sidebar)
+        content = QWidget()
+        column = QVBoxLayout(content)
+        column.setContentsMargins(28, 26, 28, 18)
+        column.setSpacing(10)
+        self._page_title = text_label("Overview", "pageTitle")
+        self._page_subtitle = text_label("", "subtitle")
+        column.addWidget(text_label("YOUR FOCUS, INTENTIONALLY", "eyebrow"))
+        column.addWidget(self._page_title)
+        column.addWidget(self._page_subtitle)
+        self._failure_banner = text_label("", "failureBanner")
+        self._failure_banner.hide()
+        column.addWidget(self._failure_banner)
+        tabs = QStackedWidget()
+        self._tabs = tabs
+        self._status = text_label("Loading local configuration…")
+        self.statusBar().addWidget(self._status, 1)
+        self._review_tab = self._build_review_tab()
+        pages = (
+            (
+                "Overview",
+                "A quiet place to plan your attention.",
+                self._build_overview_tab(),
+            ),
+            (
+                "Schedules",
+                "Make space for the work you want to do.",
+                self._build_schedules_tab(),
+            ),
+            (
+                "Applications",
+                "Choose the tools that belong in your work time.",
+                self._build_applications_tab(),
+            ),
+            (
+                "Websites",
+                "Allow useful sites. Pause before everything else.",
+                self._build_websites_tab(),
+            ),
+            (
+                "Reviews",
+                "Notice your patterns, without judging them.",
+                self._review_tab,
+            ),
+            (
+                "Settings",
+                "A reminder rhythm that works for you.",
+                self._build_settings_tab(),
+            ),
+        )
+        self._page_descriptions = [page[1] for page in pages]
+        self._page_names = [page[0] for page in pages]
+        self._page_widgets = [page[2] for page in pages]
+        for name, _description, page in pages:
+            self._navigation.addItem(name)
+            area = QScrollArea()
+            area.setWidgetResizable(True)
+            area.setWidget(page)
+            tabs.addWidget(area)
+        self._navigation.currentRowChanged.connect(self._navigate)
+        column.addWidget(tabs, 1)
+        body.addWidget(content, 1)
+        self.setCentralWidget(root)
+        self._navigation.setCurrentRow(0)
+        self._overview_timer = QTimer(self)
+        self._overview_timer.timeout.connect(self._refresh_overview)
+        self._overview_timer.start(30_000)
+
+    def _navigate(self, index: int) -> None:
+        if index < 0:
+            return
+        self._tabs.setCurrentIndex(index)
+        self._page_title.setText(self._page_names[index])
+        self._page_subtitle.setText(self._page_descriptions[index])
+        if self._page_widgets[index] is self._review_tab:
+            self._request_review()
+
+    def _go(self, name: str) -> None:
+        self._navigation.setCurrentRow(self._page_names.index(name))
 
     def _build_overview_tab(self) -> QWidget:
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        title = QLabel("Lock-In application focus loop")
-        title.setStyleSheet("font-size: 18px; font-weight: 600;")
-        layout.addWidget(title)
-        description = QLabel(
-            "Create a weekly work schedule, then add applications that are "
-            "appropriate during that schedule. Entering another application "
-            "will show a decision prompt."
+        layout.setContentsMargins(0, 14, 0, 0)
+        layout.setSpacing(18)
+        hero = QFrame()
+        hero.setObjectName("hero")
+        hero_layout = QVBoxLayout(hero)
+        hero_layout.setContentsMargins(26, 25, 26, 25)
+        hero_layout.setSpacing(14)
+        hero_layout.addWidget(text_label("PAUSE. CHOOSE. CONTINUE.", "eyebrow"))
+        self._focus_heading = text_label("Make room for what matters.", "heroTitle")
+        hero_layout.addWidget(self._focus_heading)
+        self._focus_description = text_label(
+            "Create a work period and choose your work tools. Lock-In will remind you to pause when you drift away."
         )
-        description.setWordWrap(True)
-        layout.addWidget(description)
-        self._status = QLabel("Loading local configuration…")
-        self._status.setWordWrap(True)
-        layout.addWidget(self._status)
-        self._browser_health = QLabel("Browser extension status — Chrome: 0; Edge: 0")
-        self._browser_health.setWordWrap(True)
-        layout.addWidget(self._browser_health)
+        hero_layout.addWidget(self._focus_description)
+        actions = QHBoxLayout()
+        create = QPushButton("Plan a work period")
+        create.setProperty("variant", "primary")
+        create.clicked.connect(lambda: self._go("Schedules"))
+        review = QPushButton("Review today")
+        review.clicked.connect(lambda: self.open_review(date.today()))
+        actions.addWidget(create)
+        actions.addWidget(review)
+        actions.addStretch()
+        hero_layout.addLayout(actions)
+        layout.addWidget(hero)
+        counts = QHBoxLayout()
+        self._overview_metrics = []
+        for title in ("Work schedules", "Allowed applications", "Allowed websites"):
+            frame, value = metric_card(title, "0")
+            counts.addWidget(frame, 1)
+            self._overview_metrics.append(value)
+        layout.addLayout(counts)
+        connection = QGroupBox("Browser connection")
+        connection_layout = QVBoxLayout(connection)
+        self._browser_health = text_label("No browser profiles connected yet.")
+        connection_layout.addWidget(self._browser_health)
+        connection_layout.addWidget(
+            text_label(
+                "Website reminders need the Lock-In extension in each Chrome or Edge profile. If a site cannot be verified, no website prompt is shown."
+            )
+        )
+        layout.addWidget(connection)
+        layout.addWidget(
+            text_label(
+                "Reminders, not restrictions. You always decide whether to continue."
+            )
+        )
         layout.addStretch()
         return widget
+
+    def _refresh_overview(self) -> None:
+        active = active_schedules_at(
+            self._configuration.schedules, datetime.now().astimezone()
+        )
+        if active:
+            self._focus_heading.setText("You're in a work period.")
+            self._focus_description.setText(
+                "Active now: "
+                + ", ".join(s.name for s in active)
+                + ". Your work allowlists are in use."
+            )
+        elif self._configuration.schedules:
+            self._focus_heading.setText("Ready when you are.")
+            self._focus_description.setText(
+                "No work period is active right now. Your saved schedules will turn reminders on automatically."
+            )
+        else:
+            self._focus_heading.setText("Make room for what matters.")
+            self._focus_description.setText(
+                "Create a work period and choose your work tools. Lock-In will remind you to pause when you drift away."
+            )
 
     def _build_schedules_tab(self) -> QWidget:
         widget = QWidget()
         layout = QVBoxLayout(widget)
         editor = QGroupBox("New weekly schedule")
         form = QFormLayout(editor)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         self._schedule_name = QLineEdit("Focus session")
         self._schedule_start = QTimeEdit(QTime(13, 0))
         self._schedule_end = QTimeEdit(QTime(13, 40))
@@ -136,14 +293,17 @@ class MainWindow(QMainWindow):
             day_layout.addWidget(checkbox)
         form.addRow("Days", day_widget)
         save = QPushButton("Create schedule")
+        save.setProperty("variant", "primary")
         save.clicked.connect(self._save_schedule)
         form.addRow(save)
         layout.addWidget(editor)
 
         self._schedule_list = QListWidget()
+        self._schedule_list.setMinimumHeight(140)
         layout.addWidget(QLabel("Saved schedules"))
         layout.addWidget(self._schedule_list)
         delete = QPushButton("Delete selected schedule")
+        delete.setProperty("variant", "danger")
         delete.clicked.connect(self._delete_schedule)
         layout.addWidget(delete)
         return widget
@@ -153,9 +313,11 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(widget)
         editor = QGroupBox("Add allowed application")
         form = QFormLayout(editor)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         self._allowlist_schedule = QComboBox()
         self._allowlist_schedule.addItem("All schedules", None)
         self._capture_button = QPushButton("Select by switching to an app…")
+        self._capture_button.setProperty("variant", "primary")
         self._capture_button.clicked.connect(self._toggle_capture)
         self._recent_combo = QComboBox()
         self._recent_combo.currentIndexChanged.connect(self._select_recent)
@@ -174,6 +336,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(editor)
 
         self._application_list = QListWidget()
+        self._application_list.setMinimumHeight(140)
         layout.addWidget(QLabel("Allowed applications"))
         layout.addWidget(self._application_list)
         delete = QPushButton("Remove selected application")
@@ -184,15 +347,25 @@ class MainWindow(QMainWindow):
     def _build_settings_tab(self) -> QWidget:
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        editor = QGroupBox("Follow-up reminder")
+        editor = QGroupBox("Reminders and history")
         form = QFormLayout(editor)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         self._follow_up_seconds = QSpinBox()
         self._follow_up_seconds.setRange(30, 86_400)
         self._follow_up_seconds.setSuffix(" seconds")
         self._follow_up_seconds.setValue(300)
-        save = QPushButton("Save reminder interval")
+        self._review_time = QTimeEdit(QTime(20, 0))
+        self._review_time.setDisplayFormat("HH:mm")
+        self._retention_days = QSpinBox()
+        self._retention_days.setRange(1, 3650)
+        self._retention_days.setValue(90)
+        self._retention_days.setSuffix(" days")
+        save = QPushButton("Save settings")
+        save.setProperty("variant", "primary")
         save.clicked.connect(self._save_settings)
         form.addRow("Remind again after", self._follow_up_seconds)
+        form.addRow("Daily review (local time)", self._review_time)
+        form.addRow("Keep history for", self._retention_days)
         form.addRow(save)
         layout.addWidget(editor)
         explanation = QLabel(
@@ -202,14 +375,108 @@ class MainWindow(QMainWindow):
         )
         explanation.setWordWrap(True)
         layout.addWidget(explanation)
+        note = QLabel(
+            "Daily reviews are sent while Lock-In is running, with one latest "
+            "missed review after restart or wake. Windows may hide notifications. "
+            "Older history is permanently removed at the selected retention limit. "
+            "Schedules and allowlists are preserved."
+        )
+        note.setWordWrap(True)
+        layout.addWidget(note)
         layout.addStretch()
         return widget
+
+    def _build_review_tab(self) -> QWidget:
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        controls = QHBoxLayout()
+        self._review_date = QDateEdit(QDate.currentDate())
+        self._review_date.setCalendarPopup(True)
+        self._review_date.setDisplayFormat("yyyy-MM-dd")
+        self._review_date.dateChanged.connect(lambda _date: self._request_review())
+        refresh = QPushButton("Refresh review")
+        refresh.clicked.connect(self._request_review)
+        controls.addWidget(self._review_date)
+        controls.addWidget(refresh)
+        layout.addLayout(controls)
+        metrics = QHBoxLayout()
+        self._review_metrics = []
+        for title in (
+            "Recorded time",
+            "Outside allowlist",
+            "Entry prompts",
+            "Follow-ups",
+        ):
+            card, value = metric_card(title, "—")
+            metrics.addWidget(card, 1)
+            self._review_metrics.append(value)
+        layout.addLayout(metrics)
+        self._review_summary = QLabel("Loading review…")
+        self._review_summary.setWordWrap(True)
+        layout.addWidget(self._review_summary)
+        note = QLabel(
+            "Recorded time covers active schedules while Lock-In is running and "
+            "Windows is available. Overlapping schedules count once. Unknown sites "
+            "and Lock-In windows are not counted as outside the allowlist. "
+            "Dates use the local time recorded at each event; pre-M6 history has "
+            "no reliable local-day or duration data. Today is a partial review."
+        )
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        self._review_details = QListWidget()
+        self._review_details.setMinimumHeight(180)
+        layout.addWidget(self._review_details)
+        return widget
+
+    def _request_review(self) -> None:
+        self._review_summary.setText("Loading review…")
+        self._review_details.clear()
+        for label in self._review_metrics:
+            label.setText("—")
+        self._on_request_review(self._review_date.date().toPython())
+
+    def open_review(self, day: date) -> None:
+        self._review_date.setDate(QDate(day.year, day.month, day.day))
+        self._go("Reviews")
+        self._request_review()
+
+    def update_review(self, review: DailyReview) -> None:
+        if review.day != self._review_date.date().toPython():
+            return
+        values = (
+            f"{review.scheduled_ms / 60000:.1f} min",
+            f"{review.outside_ms / 60000:.1f} min",
+            str(review.entries),
+            str(review.follow_ups),
+        )
+        for label, value in zip(self._review_metrics, values, strict=True):
+            label.setText(value)
+        self._review_summary.setText(
+            f"Continue: {review.continues} · Return: {review.returns}\n"
+            f"Notification: {review.delivery_status}\n"
+            f"Showing {len(review.details)} of {review.event_count} events (newest first)."
+        )
+        self._review_summary.setToolTip(
+            f"Recorded: {review.scheduled_ms / 1000:.0f} seconds; outside allowlist: {review.outside_ms / 1000:.0f} seconds"
+        )
+        self._review_details.clear()
+        for event in review.details:
+            target = (
+                ntpath.basename(event.target_key)
+                if event.target_type == "application"
+                else event.target_key
+            )
+            self._review_details.addItem(
+                f"{event.occurred_at} · {event.target_type}: {target} · "
+                f"{event.decision.replace('_', ' ')} ({event.prompt_kind.replace('_', ' ')})"
+            )
 
     def _build_websites_tab(self) -> QWidget:
         widget = QWidget()
         layout = QVBoxLayout(widget)
         editor = QGroupBox("Add allowed website")
         form = QFormLayout(editor)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         self._website_domain = QLineEdit()
         self._website_domain.setPlaceholderText("example.com")
         self._website_schedule = QComboBox()
@@ -217,6 +484,7 @@ class MainWindow(QMainWindow):
         self._website_subdomains = QCheckBox("Include subdomains")
         self._website_subdomains.setChecked(True)
         save = QPushButton("Add website")
+        save.setProperty("variant", "primary")
         save.clicked.connect(self._save_website)
         form.addRow("Domain", self._website_domain)
         form.addRow("Applies to", self._website_schedule)
@@ -224,6 +492,7 @@ class MainWindow(QMainWindow):
         form.addRow(save)
         layout.addWidget(editor)
         self._website_list = QListWidget()
+        self._website_list.setMinimumHeight(140)
         layout.addWidget(QLabel("Allowed websites"))
         layout.addWidget(self._website_list)
         remove = QPushButton("Remove selected website")
@@ -234,6 +503,13 @@ class MainWindow(QMainWindow):
     def update_configuration(self, configuration: FocusConfiguration) -> None:
         self._configuration = configuration
         self._follow_up_seconds.setValue(configuration.settings.follow_up_seconds)
+        self._review_time.setTime(
+            QTime(
+                configuration.settings.review_time.hour,
+                configuration.settings.review_time.minute,
+            )
+        )
+        self._retention_days.setValue(configuration.settings.history_retention_days)
         self._schedule_list.clear()
         day_names = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
         for schedule in configuration.schedules:
@@ -292,6 +568,17 @@ class MainWindow(QMainWindow):
             f"Loaded {len(configuration.schedules)} schedule(s) and "
             f"{len(configuration.applications)} allowed application(s)."
         )
+        for label, value in zip(
+            self._overview_metrics,
+            (
+                len(configuration.schedules),
+                len(configuration.applications),
+                len(configuration.websites),
+            ),
+            strict=True,
+        ):
+            label.setText(str(value))
+        self._refresh_overview()
 
     def update_recent_applications(
         self, applications: tuple[RecentApplication, ...]
@@ -313,9 +600,34 @@ class MainWindow(QMainWindow):
 
     def report_operation_error(self, operation: str) -> None:
         self._status.setText(f"The operation failed safely: {operation}.")
+        self._failure_banner.setText(
+            "That change could not be completed. Your saved data has not been reset. Try again, or restart Lock-In if this continues."
+        )
+        self._failure_banner.show()
+        if operation.startswith("review_"):
+            self._review_summary.setText(
+                "Review data could not be loaded or saved. Please refresh; check Overview for component status."
+            )
 
     def report_browser_health(self, message: str) -> None:
         self._browser_health.setText(message)
+
+    def report_component_failure(self, component: str) -> None:
+        names = {
+            "database": "Local storage",
+            "configuration": "Saved settings",
+            "foreground_monitor": "Application monitoring",
+            "browser_ipc": "Browser connection",
+            "focus_service": "Focus reminders",
+            "reviews": "Daily reviews",
+        }
+        self._failure_banner.setText(
+            f"{names.get(component, 'A background service')} needs attention. Lock-In will not block your work. Exit and restart; do not delete your data to recover."
+        )
+        self._failure_banner.show()
+        self._status.setText(
+            "Limited functionality — a service did not start correctly."
+        )
 
     def application_captured(self, application: RecentApplication) -> None:
         self._capture_active = False
@@ -442,15 +754,27 @@ class MainWindow(QMainWindow):
         self._status.setText("Removing allowed application…")
 
     def _save_settings(self) -> None:
-        current = self._configuration.settings
+        if (
+            self._retention_days.value()
+            < self._configuration.settings.history_retention_days
+        ):
+            answer = QMessageBox.question(
+                self,
+                "Shorten history retention?",
+                "Older activity records will be permanently removed at the next cleanup. Schedules and allowlists will remain. Continue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
         self._on_save_settings(
             AppSettings(
-                review_time=current.review_time,
-                history_retention_days=current.history_retention_days,
+                review_time=self._review_time.time().toPython(),
+                history_retention_days=self._retention_days.value(),
                 follow_up_seconds=self._follow_up_seconds.value(),
             )
         )
-        self._status.setText("Saving reminder interval…")
+        self._status.setText("Saving settings…")
 
     def _save_website(self) -> None:
         try:
