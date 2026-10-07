@@ -47,7 +47,7 @@ def test_empty_profile_migrates_to_current_schema(tmp_path: Path) -> None:
         versions = connection.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
         ).fetchall()
-        assert [row[0] for row in versions] == [1, 2, 3]
+        assert [row[0] for row in versions] == [1, 2, 3, 4]
         assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
     finally:
@@ -57,6 +57,7 @@ def test_empty_profile_migrates_to_current_schema(tmp_path: Path) -> None:
         {"version": 1, "name": "configuration"},
         {"version": 2, "name": "history"},
         {"version": 3, "name": "daily_reviews"},
+        {"version": 4, "name": "review_delivery_day_compatibility"},
     ]
     assert set(inspection["tables"]) == EXPECTED_TABLES
     counted = inspect_database(path, include_counts=True)
@@ -129,7 +130,7 @@ def test_each_uncommitted_migration_recovers_after_reconnect(
         assert _tables(recovered) == EXPECTED_TABLES
         assert recovered.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
-        ).fetchall() == [(1,), (2,), (3,)]
+        ).fetchall() == [(1,), (2,), (3,), (4,)]
     finally:
         recovered.close()
 

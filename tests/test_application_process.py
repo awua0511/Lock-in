@@ -96,6 +96,6 @@ def test_single_instance_rejects_duplicate_and_releases_mutex(
     try:
         assert connection.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
-        ).fetchall() == [(1,), (2,), (3,)]
+        ).fetchall() == [(1,), (2,), (3,), (4,)]
     finally:
         connection.close()

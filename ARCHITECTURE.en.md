@@ -645,6 +645,8 @@ The default policy is to record a diagnostic error that contains no sensitive da
 
 ## Packaging and Distribution
 
+Version 0.1.1 adds schema migration 4 for the two deployed schema-3 layouts of `review_deliveries`. It conditionally adds `delivery_day`, retains legacy receipts and derives occupied delivery dates from their original attempt timestamps, with at most one receipt owning each date. Already-upgraded schema-3 databases retain their existing delivery dates. The entire repair and version record commit atomically, after the standard pre-migration backup. Previously applied migrations are not rerun. Cross-schema package rollback remains refused.
+
 M7 implements three PyInstaller entry points sharing an onedir runtime: a windowed desktop EXE, a console Native Host retaining binary stdio, and a command-line setup tool. The build strips unrelated DLL search paths, checks binary provenance, includes extension files and time-zone data, and writes a hash manifest and build-version record. No automatic updater, privileged service or sign-in startup task is installed.
 
 Setup holds the production instance guard and stages each payload in a unique per-user version directory. Activation atomically replaces individual files while a recovery journal retains previous registration/file values. The next operation restores an interrupted activation before proceeding. Chrome/Edge registration covers both Windows registry views; extension IDs are explicit, and the unpacked-extension path remains stable across versions. Rollback is allowed only with the same schema version. Uninstall restores owned registrations where appropriate and never deletes the separate user-data profile. SHA-256 verifies integrity, not publisher authenticity.

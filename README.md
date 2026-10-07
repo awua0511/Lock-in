@@ -202,7 +202,7 @@ tests/                   Unit and deterministic replay tests
 - [Experiment 2](EXPERIMENT_02.md)
 - [Experiment 3](EXPERIMENT_03.md)
 - [Experiment 4](EXPERIMENT_04.md)
-- [Archived Chinese overview](README.zh-CN.md)
+- [Chinese overview and installation guide](README.zh-CN.md)
 
 ## Privacy Boundaries
 

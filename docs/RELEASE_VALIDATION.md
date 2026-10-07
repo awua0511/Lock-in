@@ -1,5 +1,9 @@
 # M7 Release Validation
 
+## Compatibility hotfix 0.1.1
+
+The original 0.1.0 candidate below is superseded for affected legacy profiles by `dist/candidate-20260928-183744/LockIn-0.1.1-windows-x64.zip` (SHA-256 `21d3c5b305c4a5aabe2c0655fae6e1c5eb74e0474018b6ef8f687c8f6ecb1d96`). See [the compatibility repair](FIX_0.1.1.md). Source validation now passes 175 Python tests, 3 JavaScript tests and 6 communication scenarios. The earlier artifact and measurements below remain a historical M7 record.
+
 Status: local implementation candidate; **not approved for public distribution**. Final user acceptance is separate from the checks below. No commit, push, signing purchase or store submission has been made.
 
 ## Reproducible checks

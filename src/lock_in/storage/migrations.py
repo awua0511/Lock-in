@@ -3,14 +3,43 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 
 
 @dataclass(frozen=True, slots=True)
 class Migration:
     version: int
     name: str
-    statements: tuple[str, ...]
+    statements: tuple[str | Callable[[sqlite3.Connection], None], ...]
+
+
+def _repair_review_delivery_day(connection: sqlite3.Connection) -> None:
+    """Upgrade both deployed v3 layouts without rewriting migration history."""
+    columns = {
+        row[1] for row in connection.execute("PRAGMA table_info(review_deliveries)")
+    }
+    if "delivery_day" not in columns:
+        connection.execute("ALTER TABLE review_deliveries ADD COLUMN delivery_day TEXT")
+        used_days: set[str] = set()
+        for local_day, attempted_at, status in connection.execute(
+            "SELECT local_day, attempted_at, status FROM review_deliveries ORDER BY attempted_at, local_day"
+        ).fetchall():
+            if status == "skipped":
+                continue
+            # Preserve the original local delivery date, including catch-up
+            # attempts for a different report date. Keep duplicate old receipts.
+            day = datetime.fromisoformat(attempted_at).date().isoformat()
+            if day not in used_days:
+                connection.execute(
+                    "UPDATE review_deliveries SET delivery_day = ? WHERE local_day = ?",
+                    (day, local_day),
+                )
+                used_days.add(day)
+    connection.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_review_delivery_day ON review_deliveries(delivery_day)"
+    )
 
 
 MIGRATIONS = (
@@ -164,6 +193,11 @@ MIGRATIONS = (
 )
 
 
+MIGRATIONS += (
+    Migration(4, "review_delivery_day_compatibility", (_repair_review_delivery_day,)),
+)
+
+
 def run_migrations(
     connection: sqlite3.Connection,
     migrations: tuple[Migration, ...] = MIGRATIONS,
@@ -202,7 +236,10 @@ def run_migrations(
         connection.execute("BEGIN IMMEDIATE")
         try:
             for statement in migration.statements:
-                connection.execute(statement)
+                if callable(statement):
+                    statement(connection)
+                else:
+                    connection.execute(statement)
             connection.execute(
                 "INSERT INTO schema_migrations(version, name) VALUES (?, ?)",
                 (migration.version, migration.name),
